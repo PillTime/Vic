@@ -1,4 +1,5 @@
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,13 +19,33 @@ size_t const k_VALIDATION_LAYERS_COUNT = sizeof(k_VALIDATION_LAYERS) / sizeof(ch
 
 GLFWwindow *g_window;
 VkInstance g_instance;
+VkPhysicalDevice g_physical_device = VK_NULL_HANDLE;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
 #endif
 
+typedef struct S_QueueFamilyIndices
+{
+    bool has_graphics_family;
+    uint32_t graphics_family;
+} QueueFamilyIndices;
+
+QueueFamilyIndices vicNewQueueFamilyIndices()
+{
+    return (QueueFamilyIndices){.has_graphics_family = false};
+}
+
+bool vicQueueFamilyIndicesIsComplete(QueueFamilyIndices const *const indices)
+{
+    return indices->has_graphics_family;
+}
+
 void vicCreateInstance();
 char **vicGetRequiredExtensions_DM(uint32_t *const);
+void vicPickPhysicalDevice();
+bool vicDeviceIsSuitable(VkPhysicalDevice const);
+QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const);
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -64,6 +85,7 @@ void vicInitVulkan()
 #ifndef NDEBUG
     vicSetupDebugMessenger();
 #endif
+    vicPickPhysicalDevice();
 }
 
 void vicMainLoop()
@@ -175,6 +197,75 @@ char **vicGetRequiredExtensions_DM(uint32_t *const size)
 #endif
 
     return extensions;
+}
+
+void vicPickPhysicalDevice()
+{
+    uint32_t devices_count = 0;
+    vkEnumeratePhysicalDevices(g_instance, &devices_count, nullptr);
+    if (devices_count == 0)
+    {
+        vicDie("failed to find GPU with vulkan support");
+    }
+
+    VkPhysicalDevice *const devices = calloc((size_t)devices_count, sizeof(VkPhysicalDevice));
+    vkEnumeratePhysicalDevices(g_instance, &devices_count, devices);
+
+    for (size_t i = 0; i < devices_count; i++)
+    {
+        if (vicDeviceIsSuitable(devices[i]))
+        {
+            g_physical_device = devices[i];
+            break;
+        }
+    }
+    if (g_physical_device == VK_NULL_HANDLE)
+    {
+        vicDie("failed to find suitable GPU");
+    }
+
+    free(devices);
+}
+
+bool vicDeviceIsSuitable(VkPhysicalDevice const device)
+{
+    VkPhysicalDeviceProperties properties = {};
+    vkGetPhysicalDeviceProperties(device, &properties);
+    VkPhysicalDeviceFeatures features = {};
+    vkGetPhysicalDeviceFeatures(device, &features);
+
+    QueueFamilyIndices const indices = vicFindQueueFamilies(device);
+
+    return properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+           features.geometryShader && vicQueueFamilyIndicesIsComplete(&indices);
+}
+
+QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const device)
+{
+    QueueFamilyIndices indices = vicNewQueueFamilyIndices();
+
+    uint32_t queue_families_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, nullptr);
+    VkQueueFamilyProperties *const queue_families =
+        calloc((size_t)queue_families_count, sizeof(VkQueueFamilyProperties));
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, queue_families);
+
+    for (size_t i = 0; i < queue_families_count; i++)
+    {
+        if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            indices.graphics_family = i;
+            indices.has_graphics_family = true;
+        }
+
+        if (vicQueueFamilyIndicesIsComplete(&indices))
+        {
+            break;
+        }
+    }
+
+    free(queue_families);
+    return indices;
 }
 
 #ifndef NDEBUG
