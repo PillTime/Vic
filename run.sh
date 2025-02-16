@@ -1,6 +1,6 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
-set -eu
+set -euo pipefail
 
 print_configs() {
   printf 'valid config values are:\n'
@@ -30,4 +30,5 @@ export CXX=/usr/bin/clang++
 
 cmake -S . -B build -G 'Ninja Multi-Config'
 cmake --build build --config "$1"
-"./build/src/$1/vic"
+
+"./build/src/$1/vic" 2> >(while read -r line; do printf '\e[01;31m%s\e[0m\n' "$line" >&2; done)
