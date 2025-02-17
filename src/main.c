@@ -20,6 +20,8 @@ size_t const k_VALIDATION_LAYERS_COUNT = sizeof(k_VALIDATION_LAYERS) / sizeof(ch
 GLFWwindow *g_window;
 VkInstance g_instance;
 VkPhysicalDevice g_physical_device = VK_NULL_HANDLE;
+VkDevice g_device;
+VkQueue g_graphics_queue;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -46,6 +48,7 @@ char **vicGetRequiredExtensions_DM(uint32_t *const);
 void vicPickPhysicalDevice();
 bool vicDeviceIsSuitable(VkPhysicalDevice const);
 QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const);
+void vicCreateLogicalDevice();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -86,6 +89,7 @@ void vicInitVulkan()
     vicSetupDebugMessenger();
 #endif
     vicPickPhysicalDevice();
+    vicCreateLogicalDevice();
 }
 
 void vicMainLoop()
@@ -98,6 +102,8 @@ void vicMainLoop()
 
 void vicCleanup()
 {
+    vkDestroyDevice(g_device, nullptr);
+
 #ifndef NDEBUG
     vicDestroyDebugUtilsMessengerEXT(g_instance, g_debug_messenger, nullptr);
 #endif
@@ -266,6 +272,41 @@ QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const device)
 
     free(queue_families);
     return indices;
+}
+
+void vicCreateLogicalDevice()
+{
+    QueueFamilyIndices const indices = vicFindQueueFamilies(g_physical_device);
+
+    VkDeviceQueueCreateInfo queue_create_info = {};
+    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_create_info.queueFamilyIndex = indices.graphics_family;
+    queue_create_info.queueCount = 1;
+
+    float const queue_priority = 1.0;
+    queue_create_info.pQueuePriorities = &queue_priority;
+
+    VkPhysicalDeviceFeatures const device_features = {};
+
+    VkDeviceCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_info.pQueueCreateInfos = &queue_create_info;
+    create_info.queueCreateInfoCount = 1;
+    create_info.pEnabledFeatures = &device_features;
+    create_info.enabledExtensionCount = 0;
+#ifndef NDEBUG
+    create_info.enabledLayerCount = (uint32_t)k_VALIDATION_LAYERS_COUNT;
+    create_info.ppEnabledLayerNames = k_VALIDATION_LAYERS;
+#else
+    create_info.enabledLayerCount = 0;
+#endif
+
+    if (vkCreateDevice(g_physical_device, &create_info, nullptr, &g_device) != VK_SUCCESS)
+    {
+        vicDie("failed to create logical device");
+    }
+
+    vkGetDeviceQueue(g_device, indices.graphics_family, 0, &g_graphics_queue);
 }
 
 #ifndef NDEBUG
