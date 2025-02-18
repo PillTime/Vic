@@ -34,6 +34,7 @@ VkImageView *g_swap_chain_image_views;
 uint32_t g_swap_chain_images_count;
 VkFormat g_swap_chain_image_format;
 VkExtent2D g_swap_chain_extent;
+VkRenderPass g_render_pass;
 VkPipelineLayout g_pipeline_layout;
 
 #ifndef NDEBUG
@@ -81,6 +82,7 @@ VkPresentModeKHR vicChooseSwapPresentMode(VkPresentModeKHR const *const, size_t 
 VkExtent2D vicChooseSwapExtent(VkSurfaceCapabilitiesKHR const *const);
 void vicCreateSwapChain_DM();
 void vicCreateImageViews_DM();
+void vicCreateRenderPass();
 void vicCreateGraphicsPipeline();
 char *vicReadFile_DM(char const *const, size_t *const);
 VkShaderModule vicCreateShaderModule(char const *const, size_t const);
@@ -133,6 +135,7 @@ void vicInitVulkan()
     vicCreateLogicalDevice();
     vicCreateSwapChain_DM();
     vicCreateImageViews_DM();
+    vicCreateRenderPass();
     vicCreateGraphicsPipeline();
 }
 
@@ -147,6 +150,7 @@ void vicMainLoop()
 void vicCleanup()
 {
     vkDestroyPipelineLayout(g_device, g_pipeline_layout, nullptr);
+    vkDestroyRenderPass(g_device, g_render_pass, nullptr);
 
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
@@ -609,6 +613,40 @@ void vicCreateImageViews_DM()
         {
             vicDie("failed to create image views");
         }
+    }
+}
+
+void vicCreateRenderPass()
+{
+    VkAttachmentDescription attachment = {};
+    attachment.format = g_swap_chain_image_format;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference attachment_reference = {};
+    attachment_reference.attachment = 0;
+    attachment_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &attachment_reference;
+
+    VkRenderPassCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    create_info.attachmentCount = 1;
+    create_info.pAttachments = &attachment;
+    create_info.subpassCount = 1;
+    create_info.pSubpasses = &subpass;
+
+    if (vkCreateRenderPass(g_device, &create_info, nullptr, &g_render_pass) != VK_SUCCESS)
+    {
+        vicDie("failed to create render pass");
     }
 }
 
