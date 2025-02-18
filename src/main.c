@@ -37,6 +37,7 @@ VkExtent2D g_swap_chain_extent;
 VkRenderPass g_render_pass;
 VkPipelineLayout g_pipeline_layout;
 VkPipeline g_graphics_pipeline;
+VkFramebuffer *g_swap_chain_framebuffers;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -87,6 +88,7 @@ void vicCreateRenderPass();
 void vicCreateGraphicsPipeline();
 char *vicReadFile_DM(char const *const, size_t *const);
 VkShaderModule vicCreateShaderModule(char const *const, size_t const);
+void vicCreateFramebuffers_DM();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -138,6 +140,7 @@ void vicInitVulkan()
     vicCreateImageViews_DM();
     vicCreateRenderPass();
     vicCreateGraphicsPipeline();
+    vicCreateFramebuffers_DM();
 }
 
 void vicMainLoop()
@@ -150,6 +153,12 @@ void vicMainLoop()
 
 void vicCleanup()
 {
+    for (size_t i = 0; i < g_swap_chain_images_count; i++)
+    {
+        vkDestroyFramebuffer(g_device, g_swap_chain_framebuffers[i], nullptr);
+    }
+    free(g_swap_chain_framebuffers);
+
     vkDestroyPipeline(g_device, g_graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(g_device, g_pipeline_layout, nullptr);
     vkDestroyRenderPass(g_device, g_render_pass, nullptr);
@@ -822,6 +831,31 @@ VkShaderModule vicCreateShaderModule(char const *const code, size_t const code_s
         vicDie("failed to create shader module");
     }
     return shader_module;
+}
+
+void vicCreateFramebuffers_DM()
+{
+    g_swap_chain_framebuffers = calloc(g_swap_chain_images_count, sizeof(VkFramebuffer));
+
+    for (size_t i = 0; i < g_swap_chain_images_count; i++)
+    {
+        VkImageView const attachments[] = {g_swap_chain_image_views[i]};
+
+        VkFramebufferCreateInfo create_info = {};
+        create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        create_info.renderPass = g_render_pass;
+        create_info.attachmentCount = 1;
+        create_info.pAttachments = attachments;
+        create_info.width = g_swap_chain_extent.width;
+        create_info.height = g_swap_chain_extent.height;
+        create_info.layers = 1;
+
+        if (vkCreateFramebuffer(g_device, &create_info, nullptr, &g_swap_chain_framebuffers[i]) !=
+            VK_SUCCESS)
+        {
+            vicDie("failed to create framebuffer");
+        }
+    }
 }
 
 #ifndef NDEBUG
