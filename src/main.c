@@ -38,6 +38,11 @@ VkRenderPass g_render_pass;
 VkPipelineLayout g_pipeline_layout;
 VkPipeline g_graphics_pipeline;
 VkFramebuffer *g_swap_chain_framebuffers;
+VkCommandPool g_command_pool;
+VkCommandBuffer g_command_buffer;
+VkSemaphore g_image_available_semaphore;
+VkSemaphore g_render_finished_semaphore;
+VkFence g_in_flight_fence;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -89,6 +94,11 @@ void vicCreateGraphicsPipeline();
 char *vicReadFile_DM(char const *const, size_t *const);
 VkShaderModule vicCreateShaderModule(char const *const, size_t const);
 void vicCreateFramebuffers_DM();
+void vicCreateCommandPool();
+void vicCreateCommandBuffer();
+void vicRecordCommandBuffer(VkCommandBuffer const, size_t const);
+void vicDrawFrame();
+void vicCreateSyncObjects();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -141,6 +151,9 @@ void vicInitVulkan()
     vicCreateRenderPass();
     vicCreateGraphicsPipeline();
     vicCreateFramebuffers_DM();
+    vicCreateCommandPool();
+    vicCreateCommandBuffer();
+    vicCreateSyncObjects();
 }
 
 void vicMainLoop()
@@ -148,11 +161,19 @@ void vicMainLoop()
     while (!glfwWindowShouldClose(g_window))
     {
         glfwPollEvents();
+        vicDrawFrame();
     }
+    vkDeviceWaitIdle(g_device);
 }
 
 void vicCleanup()
 {
+    vkDestroyFence(g_device, g_in_flight_fence, nullptr);
+    vkDestroySemaphore(g_device, g_render_finished_semaphore, nullptr);
+    vkDestroySemaphore(g_device, g_image_available_semaphore, nullptr);
+
+    vkDestroyCommandPool(g_device, g_command_pool, nullptr);
+
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
         vkDestroyFramebuffer(g_device, g_swap_chain_framebuffers[i], nullptr);
@@ -648,12 +669,22 @@ void vicCreateRenderPass()
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &attachment_reference;
 
+    VkSubpassDependency dependency = {};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
     VkRenderPassCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     create_info.attachmentCount = 1;
     create_info.pAttachments = &attachment;
     create_info.subpassCount = 1;
     create_info.pSubpasses = &subpass;
+    create_info.dependencyCount = 1;
+    create_info.pDependencies = &dependency;
 
     if (vkCreateRenderPass(g_device, &create_info, nullptr, &g_render_pass) != VK_SUCCESS)
     {
@@ -855,6 +886,147 @@ void vicCreateFramebuffers_DM()
         {
             vicDie("failed to create framebuffer");
         }
+    }
+}
+
+void vicCreateCommandPool()
+{
+    QueueFamilyIndices const indices = vicFindQueueFamilies(g_physical_device);
+
+    VkCommandPoolCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    create_info.queueFamilyIndex = indices.graphics_family;
+
+    if (vkCreateCommandPool(g_device, &create_info, nullptr, &g_command_pool) != VK_SUCCESS)
+    {
+        vicDie("failed to create command pool");
+    }
+}
+
+void vicCreateCommandBuffer()
+{
+    VkCommandBufferAllocateInfo allocation_info = {};
+    allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocation_info.commandPool = g_command_pool;
+    allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation_info.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(g_device, &allocation_info, &g_command_buffer) != VK_SUCCESS)
+    {
+        vicDie("failed to allocate command buffers");
+    }
+}
+
+void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const image_idx)
+{
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS)
+    {
+        vicDie("failed to begin recording command buffer");
+    }
+
+    VkRenderPassBeginInfo render_pass_begin_info = {};
+    render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    render_pass_begin_info.renderPass = g_render_pass;
+    render_pass_begin_info.framebuffer = g_swap_chain_framebuffers[image_idx];
+    render_pass_begin_info.renderArea.offset = (VkOffset2D){.x = 0, .y = 0};
+    render_pass_begin_info.renderArea.extent = g_swap_chain_extent;
+
+    VkClearValue const clear_color = {{{0.0, 0.0, 0.0, 1.0}}};
+    render_pass_begin_info.clearValueCount = 1;
+    render_pass_begin_info.pClearValues = &clear_color;
+
+    vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_graphics_pipeline);
+
+        VkViewport viewport = {};
+        viewport.x = 0.0;
+        viewport.y = 0.0;
+        viewport.width = (float)g_swap_chain_extent.width;
+        viewport.height = (float)g_swap_chain_extent.height;
+        viewport.minDepth = 0.0;
+        viewport.maxDepth = 1.0;
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+        VkRect2D scissor = {};
+        scissor.offset = (VkOffset2D){.x = 0, .y = 0};
+        scissor.extent = g_swap_chain_extent;
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    }
+    vkCmdEndRenderPass(command_buffer);
+
+    if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS)
+    {
+        vicDie("failed to record command buffer");
+    }
+}
+
+void vicDrawFrame()
+{
+    vkWaitForFences(g_device, 1, &g_in_flight_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_in_flight_fence);
+
+    uint32_t image_idx = 0;
+    vkAcquireNextImageKHR(g_device, g_swap_chain, UINT64_MAX, g_image_available_semaphore,
+                          VK_NULL_HANDLE, &image_idx);
+
+    vkResetCommandBuffer(g_command_buffer, 0);
+    vicRecordCommandBuffer(g_command_buffer, image_idx);
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore const wait_semaphores[] = {g_image_available_semaphore};
+    VkPipelineStageFlags const wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitSemaphores = wait_semaphores;
+    submit_info.pWaitDstStageMask = wait_stages;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &g_command_buffer;
+
+    VkSemaphore const signal_semaphores[] = {g_render_finished_semaphore};
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = signal_semaphores;
+
+    if (vkQueueSubmit(g_graphics_queue, 1, &submit_info, g_in_flight_fence) != VK_SUCCESS)
+    {
+        vicDie("failed to submit draw command buffer");
+    }
+
+    VkPresentInfoKHR present_info = {};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = signal_semaphores;
+
+    VkSwapchainKHR const swap_chains[] = {g_swap_chain};
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = swap_chains;
+    present_info.pImageIndices = &image_idx;
+
+    vkQueuePresentKHR(g_present_queue, &present_info);
+}
+
+void vicCreateSyncObjects()
+{
+    VkSemaphoreCreateInfo semaphore_create_info = {};
+    semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fence_create_info = {};
+    fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    if (vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
+                          &g_image_available_semaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
+                          &g_render_finished_semaphore) != VK_SUCCESS ||
+        vkCreateFence(g_device, &fence_create_info, nullptr, &g_in_flight_fence) != VK_SUCCESS)
+    {
+        vicDie("failed to create synchronization objects");
     }
 }
 
