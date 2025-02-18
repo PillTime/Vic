@@ -80,6 +80,9 @@ VkPresentModeKHR vicChooseSwapPresentMode(VkPresentModeKHR const *const, size_t 
 VkExtent2D vicChooseSwapExtent(VkSurfaceCapabilitiesKHR const *const);
 void vicCreateSwapChain_DM();
 void vicCreateImageViews_DM();
+void vicCreateGraphicsPipeline();
+char *vicReadFile_DM(char const *const, size_t *const);
+VkShaderModule vicCreateShaderModule(char const *const, size_t const);
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -129,6 +132,7 @@ void vicInitVulkan()
     vicCreateLogicalDevice();
     vicCreateSwapChain_DM();
     vicCreateImageViews_DM();
+    vicCreateGraphicsPipeline();
 }
 
 void vicMainLoop()
@@ -603,6 +607,77 @@ void vicCreateImageViews_DM()
             vicDie("failed to create image views");
         }
     }
+}
+
+void vicCreateGraphicsPipeline()
+{
+    size_t vert_shader_code_size = 0;
+    char *const vert_shader_code =
+        vicReadFile_DM("build/shd/shader.vert.spv", &vert_shader_code_size);
+    size_t frag_shader_code_size = 0;
+    char *const frag_shader_code =
+        vicReadFile_DM("build/shd/shader.frag.spv", &frag_shader_code_size);
+
+    VkShaderModule const vert_shader_module =
+        vicCreateShaderModule(vert_shader_code, vert_shader_code_size);
+    VkShaderModule const frag_shader_module =
+        vicCreateShaderModule(frag_shader_code, frag_shader_code_size);
+
+    VkPipelineShaderStageCreateInfo vert_shader_stage_create_info = {};
+    vert_shader_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vert_shader_stage_create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vert_shader_stage_create_info.module = vert_shader_module;
+    vert_shader_stage_create_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo frag_shader_stage_create_info = {};
+    frag_shader_stage_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    frag_shader_stage_create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    frag_shader_stage_create_info.module = frag_shader_module;
+    frag_shader_stage_create_info.pName = "main";
+
+    VkPipelineShaderStageCreateInfo const shader_stages[] = {vert_shader_stage_create_info,
+                                                             frag_shader_stage_create_info};
+    (void)shader_stages;
+
+    vkDestroyShaderModule(g_device, frag_shader_module, nullptr);
+    vkDestroyShaderModule(g_device, vert_shader_module, nullptr);
+
+    free(vert_shader_code);
+    free(frag_shader_code);
+}
+
+char *vicReadFile_DM(char const *const filename, size_t *const file_size)
+{
+    FILE *const file = fopen(filename, "rb");
+    if (!file)
+    {
+        vicDie("failed to open file");
+    }
+
+    fseek(file, 0, SEEK_END);
+    *file_size = ftell(file);
+    rewind(file);
+
+    char *const buffer = calloc(*file_size, sizeof(char));
+    fread(buffer, 1, *file_size, file);
+
+    fclose(file);
+    return buffer;
+}
+
+VkShaderModule vicCreateShaderModule(char const *const code, size_t const code_size)
+{
+    VkShaderModuleCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    create_info.codeSize = code_size;
+    create_info.pCode = (uint32_t const *)code;
+
+    VkShaderModule shader_module;
+    if (vkCreateShaderModule(g_device, &create_info, nullptr, &shader_module) != VK_SUCCESS)
+    {
+        vicDie("failed to create shader module");
+    }
+    return shader_module;
 }
 
 #ifndef NDEBUG
