@@ -15,6 +15,7 @@ uint32_t const k_WINDOW_HEIGHT = 720;
 char const *const k_APP_NAME = "vic";
 char const *const k_DEVICE_EXTENSIONS[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 size_t const k_DEVICE_EXTENSIONS_COUNT = sizeof(k_DEVICE_EXTENSIONS) / sizeof(char const *);
+uint32_t const k_MAX_FRAMES_IN_FLIGHT = 2;
 
 #ifndef NDEBUG
 char const *const k_VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
@@ -39,10 +40,11 @@ VkPipelineLayout g_pipeline_layout;
 VkPipeline g_graphics_pipeline;
 VkFramebuffer *g_swap_chain_framebuffers;
 VkCommandPool g_command_pool;
-VkCommandBuffer g_command_buffer;
-VkSemaphore g_image_available_semaphore;
-VkSemaphore g_render_finished_semaphore;
-VkFence g_in_flight_fence;
+VkCommandBuffer *g_command_buffers;
+VkSemaphore *g_image_available_semaphores;
+VkSemaphore *g_render_finished_semaphores;
+VkFence *g_in_flight_fences;
+size_t g_current_frame = 0;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -95,10 +97,10 @@ char *vicReadFile_DM(char const *const, size_t *const);
 VkShaderModule vicCreateShaderModule(char const *const, size_t const);
 void vicCreateFramebuffers_DM();
 void vicCreateCommandPool();
-void vicCreateCommandBuffer();
+void vicCreateCommandBuffers_DM();
 void vicRecordCommandBuffer(VkCommandBuffer const, size_t const);
 void vicDrawFrame();
-void vicCreateSyncObjects();
+void vicCreateSyncObjects_DM();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
@@ -152,8 +154,8 @@ void vicInitVulkan()
     vicCreateGraphicsPipeline();
     vicCreateFramebuffers_DM();
     vicCreateCommandPool();
-    vicCreateCommandBuffer();
-    vicCreateSyncObjects();
+    vicCreateCommandBuffers_DM();
+    vicCreateSyncObjects_DM();
 }
 
 void vicMainLoop()
@@ -168,9 +170,17 @@ void vicMainLoop()
 
 void vicCleanup()
 {
-    vkDestroyFence(g_device, g_in_flight_fence, nullptr);
-    vkDestroySemaphore(g_device, g_render_finished_semaphore, nullptr);
-    vkDestroySemaphore(g_device, g_image_available_semaphore, nullptr);
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroyFence(g_device, g_in_flight_fences[i], nullptr);
+        vkDestroySemaphore(g_device, g_render_finished_semaphores[i], nullptr);
+        vkDestroySemaphore(g_device, g_image_available_semaphores[i], nullptr);
+    }
+    free(g_in_flight_fences);
+    free(g_render_finished_semaphores);
+    free(g_image_available_semaphores);
+
+    free(g_command_buffers);
 
     vkDestroyCommandPool(g_device, g_command_pool, nullptr);
 
@@ -904,15 +914,17 @@ void vicCreateCommandPool()
     }
 }
 
-void vicCreateCommandBuffer()
+void vicCreateCommandBuffers_DM()
 {
+    g_command_buffers = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
+
     VkCommandBufferAllocateInfo allocation_info = {};
     allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocation_info.commandPool = g_command_pool;
     allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocation_info.commandBufferCount = 1;
+    allocation_info.commandBufferCount = k_MAX_FRAMES_IN_FLIGHT;
 
-    if (vkAllocateCommandBuffers(g_device, &allocation_info, &g_command_buffer) != VK_SUCCESS)
+    if (vkAllocateCommandBuffers(g_device, &allocation_info, g_command_buffers) != VK_SUCCESS)
     {
         vicDie("failed to allocate command buffers");
     }
@@ -969,32 +981,34 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
 
 void vicDrawFrame()
 {
-    vkWaitForFences(g_device, 1, &g_in_flight_fence, VK_TRUE, UINT64_MAX);
-    vkResetFences(g_device, 1, &g_in_flight_fence);
+    vkWaitForFences(g_device, 1, &g_in_flight_fences[g_current_frame], VK_TRUE, UINT64_MAX);
+    vkResetFences(g_device, 1, &g_in_flight_fences[g_current_frame]);
 
     uint32_t image_idx = 0;
-    vkAcquireNextImageKHR(g_device, g_swap_chain, UINT64_MAX, g_image_available_semaphore,
-                          VK_NULL_HANDLE, &image_idx);
+    vkAcquireNextImageKHR(g_device, g_swap_chain, UINT64_MAX,
+                          g_image_available_semaphores[g_current_frame], VK_NULL_HANDLE,
+                          &image_idx);
 
-    vkResetCommandBuffer(g_command_buffer, 0);
-    vicRecordCommandBuffer(g_command_buffer, image_idx);
+    vkResetCommandBuffer(g_command_buffers[g_current_frame], 0);
+    vicRecordCommandBuffer(g_command_buffers[g_current_frame], image_idx);
 
     VkSubmitInfo submit_info = {};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore const wait_semaphores[] = {g_image_available_semaphore};
+    VkSemaphore const wait_semaphores[] = {g_image_available_semaphores[g_current_frame]};
     VkPipelineStageFlags const wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     submit_info.waitSemaphoreCount = 1;
     submit_info.pWaitSemaphores = wait_semaphores;
     submit_info.pWaitDstStageMask = wait_stages;
     submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &g_command_buffer;
+    submit_info.pCommandBuffers = &g_command_buffers[g_current_frame];
 
-    VkSemaphore const signal_semaphores[] = {g_render_finished_semaphore};
+    VkSemaphore const signal_semaphores[] = {g_render_finished_semaphores[g_current_frame]};
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = signal_semaphores;
 
-    if (vkQueueSubmit(g_graphics_queue, 1, &submit_info, g_in_flight_fence) != VK_SUCCESS)
+    if (vkQueueSubmit(g_graphics_queue, 1, &submit_info, g_in_flight_fences[g_current_frame]) !=
+        VK_SUCCESS)
     {
         vicDie("failed to submit draw command buffer");
     }
@@ -1010,23 +1024,33 @@ void vicDrawFrame()
     present_info.pImageIndices = &image_idx;
 
     vkQueuePresentKHR(g_present_queue, &present_info);
+
+    g_current_frame = (g_current_frame + 1) % k_MAX_FRAMES_IN_FLIGHT;
 }
 
-void vicCreateSyncObjects()
+void vicCreateSyncObjects_DM()
 {
+    g_image_available_semaphores = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
+    g_render_finished_semaphores = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkSemaphore));
+    g_in_flight_fences = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkFence));
+
     VkSemaphoreCreateInfo semaphore_create_info = {};
     semaphore_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     VkFenceCreateInfo fence_create_info = {};
     fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    if (vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
-                          &g_image_available_semaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
-                          &g_render_finished_semaphore) != VK_SUCCESS ||
-        vkCreateFence(g_device, &fence_create_info, nullptr, &g_in_flight_fence) != VK_SUCCESS)
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
     {
-        vicDie("failed to create synchronization objects");
+        if (vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
+                              &g_image_available_semaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(g_device, &semaphore_create_info, nullptr,
+                              &g_render_finished_semaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(g_device, &fence_create_info, nullptr, &g_in_flight_fences[i]) !=
+                VK_SUCCESS)
+        {
+            vicDie("failed to create synchronization objects");
+        }
     }
 }
 
