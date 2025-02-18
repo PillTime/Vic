@@ -36,6 +36,7 @@ VkFormat g_swap_chain_image_format;
 VkExtent2D g_swap_chain_extent;
 VkRenderPass g_render_pass;
 VkPipelineLayout g_pipeline_layout;
+VkPipeline g_graphics_pipeline;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -149,6 +150,7 @@ void vicMainLoop()
 
 void vicCleanup()
 {
+    vkDestroyPipeline(g_device, g_graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(g_device, g_pipeline_layout, nullptr);
     vkDestroyRenderPass(g_device, g_render_pass, nullptr);
 
@@ -678,7 +680,6 @@ void vicCreateGraphicsPipeline()
 
     VkPipelineShaderStageCreateInfo const shader_stages[] = {vert_shader_stage_create_info,
                                                              frag_shader_stage_create_info};
-    (void)shader_stages;
 
     VkPipelineVertexInputStateCreateInfo vertex_input_create_info = {};
     vertex_input_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -757,6 +758,29 @@ void vicCreateGraphicsPipeline()
                                &g_pipeline_layout) != VK_SUCCESS)
     {
         vicDie("failed to create pipeline layout");
+    }
+
+    VkGraphicsPipelineCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    create_info.stageCount = 2;
+    create_info.pStages = shader_stages;
+    create_info.pVertexInputState = &vertex_input_create_info;
+    create_info.pInputAssemblyState = &input_assembly_create_info;
+    create_info.pViewportState = &viewport_create_info;
+    create_info.pRasterizationState = &rasterization_create_info;
+    create_info.pMultisampleState = &multisample_create_info;
+    create_info.pColorBlendState = &color_blend_create_info;
+    create_info.pDynamicState = &dynamic_create_info;
+    create_info.layout = g_pipeline_layout;
+    create_info.renderPass = g_render_pass;
+    create_info.subpass = 0;
+    create_info.basePipelineHandle = VK_NULL_HANDLE;
+    create_info.basePipelineIndex = -1;
+
+    if (vkCreateGraphicsPipelines(g_device, VK_NULL_HANDLE, 1, &create_info, nullptr,
+                                  &g_graphics_pipeline) != VK_SUCCESS)
+    {
+        vicDie("failed to create graphics pipeline");
     }
 
     vkDestroyShaderModule(g_device, frag_shader_module, nullptr);
