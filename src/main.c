@@ -1,9 +1,12 @@
+// TODO: investigate usage of restrict
+
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define GLFW_INCLUDE_VULKAN
 
@@ -23,6 +26,7 @@ char const *const k_VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
 size_t const k_VALIDATION_LAYERS_COUNT = sizeof(k_VALIDATION_LAYERS) / sizeof(char const *);
 #endif
 
+struct timespec g_start_time;
 GLFWwindow *g_window;
 VkInstance g_instance;
 VkPhysicalDevice g_physical_device = VK_NULL_HANDLE;
@@ -37,6 +41,7 @@ uint32_t g_swap_chain_images_count;
 VkFormat g_swap_chain_image_format;
 VkExtent2D g_swap_chain_extent;
 VkRenderPass g_render_pass;
+VkDescriptorSetLayout g_descriptor_set_layout;
 VkPipelineLayout g_pipeline_layout;
 VkPipeline g_graphics_pipeline;
 VkFramebuffer *g_swap_chain_framebuffers;
@@ -45,6 +50,11 @@ VkBuffer g_vertex_buffer;
 VkDeviceMemory g_vertex_buffer_memory;
 VkBuffer g_index_buffer;
 VkDeviceMemory g_index_buffer_memory;
+VkBuffer *g_uniform_buffers;
+VkDeviceMemory *g_uniform_buffers_memory;
+void **g_uniform_buffers_mapped;
+VkDescriptorPool g_descriptor_pool;
+VkDescriptorSet *g_descriptor_sets;
 VkCommandBuffer *g_command_buffers;
 VkSemaphore *g_image_available_semaphores;
 VkSemaphore *g_render_finished_semaphores;
@@ -128,6 +138,13 @@ VkVertexInputAttributeDescription *vicGetVertexAttributeDescriptions_DM(
     return attribute_descriptions;
 }
 
+typedef struct S_UniformBufferObject
+{
+    mat4 model;
+    mat4 view;
+    mat4 projection;
+} UniformBufferObject;
+
 void vicCreateInstance();
 char **vicGetRequiredExtensions_DM(uint32_t *);
 void vicCreateSurface();
@@ -143,6 +160,7 @@ VkExtent2D vicChooseSwapExtent(VkSurfaceCapabilitiesKHR const *);
 void vicCreateSwapChain_DM();
 void vicCreateImageViews_DM();
 void vicCreateRenderPass();
+void vicCreateDescriptorSetLayout();
 void vicCreateGraphicsPipeline();
 char *vicReadFile_DM(char const *, size_t *);
 VkShaderModule vicCreateShaderModule(char const *, size_t);
@@ -153,10 +171,14 @@ void vicCreateBuffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, Vk
 void vicCopyBuffer(VkBuffer, VkBuffer, VkDeviceSize);
 void vicCreateVertexBuffer();
 void vicCreateIndexBuffer();
+void vicCreateUniformBuffers_DM();
+void vicCreateDescriptorPool();
+void vicCreateDescriptorSets_DM();
 uint32_t vicFindMemoryType(uint32_t, VkMemoryPropertyFlags);
 void vicCreateCommandBuffers_DM();
 void vicRecordCommandBuffer(VkCommandBuffer, size_t);
 void vicDrawFrame();
+void vicUpdateUniformData(size_t);
 void vicCreateSyncObjects_DM();
 void vicCleanupSwapChain();
 void vicRecreateSwapChain();
@@ -211,11 +233,15 @@ void vicInitVulkan()
     vicCreateSwapChain_DM();
     vicCreateImageViews_DM();
     vicCreateRenderPass();
+    vicCreateDescriptorSetLayout();
     vicCreateGraphicsPipeline();
     vicCreateFramebuffers_DM();
     vicCreateCommandPool();
     vicCreateVertexBuffer();
     vicCreateIndexBuffer();
+    vicCreateUniformBuffers_DM();
+    vicCreateDescriptorPool();
+    vicCreateDescriptorSets_DM();
     vicCreateCommandBuffers_DM();
     vicCreateSyncObjects_DM();
 }
@@ -233,6 +259,19 @@ void vicMainLoop()
 void vicCleanup()
 {
     vicCleanupSwapChain();
+
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vkDestroyBuffer(g_device, g_uniform_buffers[i], nullptr);
+        vkFreeMemory(g_device, g_uniform_buffers_memory[i], nullptr);
+    }
+    free(g_uniform_buffers_mapped);
+    free(g_uniform_buffers_memory);
+    free(g_uniform_buffers);
+
+    vkDestroyDescriptorPool(g_device, g_descriptor_pool, nullptr);
+    vkDestroyDescriptorSetLayout(g_device, g_descriptor_set_layout, nullptr);
+    free(g_descriptor_sets);
 
     vkDestroyBuffer(g_device, g_index_buffer, nullptr);
     vkFreeMemory(g_device, g_index_buffer_memory, nullptr);
@@ -755,6 +794,26 @@ void vicCreateRenderPass()
     }
 }
 
+void vicCreateDescriptorSetLayout()
+{
+    VkDescriptorSetLayoutBinding layout_binding = {};
+    layout_binding.binding = 0;
+    layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    layout_binding.descriptorCount = 1;
+    layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+
+    VkDescriptorSetLayoutCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    create_info.bindingCount = 1;
+    create_info.pBindings = &layout_binding;
+
+    if (vkCreateDescriptorSetLayout(g_device, &create_info, nullptr, &g_descriptor_set_layout) !=
+        VK_SUCCESS)
+    {
+        vicDie("failed to create descriptor set layout");
+    }
+}
+
 void vicCreateGraphicsPipeline()
 {
     size_t vert_shader_code_size = 0;
@@ -837,7 +896,7 @@ void vicCreateGraphicsPipeline()
     rasterization_create_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterization_create_info.lineWidth = 1.0;
     rasterization_create_info.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterization_create_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization_create_info.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo multisample_create_info = {};
@@ -865,6 +924,8 @@ void vicCreateGraphicsPipeline()
 
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
     pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_create_info.setLayoutCount = 1;
+    pipeline_layout_create_info.pSetLayouts = &g_descriptor_set_layout;
 
     if (vkCreatePipelineLayout(g_device, &pipeline_layout_create_info, nullptr,
                                &g_pipeline_layout) != VK_SUCCESS)
@@ -1099,6 +1160,85 @@ void vicCreateIndexBuffer()
     vkFreeMemory(g_device, staging_buffer_memory, nullptr);
 }
 
+void vicCreateUniformBuffers_DM()
+{
+    VkDeviceSize const buffer_size = sizeof(UniformBufferObject);
+
+    g_uniform_buffers = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkBuffer));
+    g_uniform_buffers_memory = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkDeviceMemory));
+    g_uniform_buffers_mapped = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(void *));
+
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        vicCreateBuffer(buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        &g_uniform_buffers[i], &g_uniform_buffers_memory[i]);
+        vkMapMemory(g_device, g_uniform_buffers_memory[i], 0, buffer_size, 0,
+                    &g_uniform_buffers_mapped[i]);
+    }
+}
+
+void vicCreateDescriptorPool()
+{
+    VkDescriptorPoolSize pool_size = {};
+    pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_size.descriptorCount = k_MAX_FRAMES_IN_FLIGHT;
+
+    VkDescriptorPoolCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    create_info.poolSizeCount = 1;
+    create_info.pPoolSizes = &pool_size;
+    create_info.maxSets = k_MAX_FRAMES_IN_FLIGHT;
+
+    if (vkCreateDescriptorPool(g_device, &create_info, nullptr, &g_descriptor_pool) != VK_SUCCESS)
+    {
+        vicDie("failed to create descriptor pool");
+    }
+}
+
+void vicCreateDescriptorSets_DM()
+{
+    VkDescriptorSetLayout *const layouts =
+        calloc((size_t)k_MAX_FRAMES_IN_FLIGHT, sizeof(VkDescriptorSetLayout));
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        layouts[i] = g_descriptor_set_layout;
+    }
+
+    VkDescriptorSetAllocateInfo allocation_info = {};
+    allocation_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocation_info.descriptorPool = g_descriptor_pool;
+    allocation_info.descriptorSetCount = k_MAX_FRAMES_IN_FLIGHT;
+    allocation_info.pSetLayouts = layouts;
+
+    g_descriptor_sets = calloc((size_t)k_MAX_FRAMES_IN_FLIGHT, sizeof(VkDescriptorSet));
+    if (vkAllocateDescriptorSets(g_device, &allocation_info, g_descriptor_sets) != VK_SUCCESS)
+    {
+        vicDie("failed to allocate descriptor sets");
+    }
+
+    for (size_t i = 0; i < k_MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        VkDescriptorBufferInfo buffer_info = {};
+        buffer_info.buffer = g_uniform_buffers[i];
+        buffer_info.offset = 0;
+        buffer_info.range = sizeof(UniformBufferObject);
+
+        VkWriteDescriptorSet descriptor_write = {};
+        descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptor_write.dstSet = g_descriptor_sets[i];
+        descriptor_write.dstBinding = 0;
+        descriptor_write.dstArrayElement = 0;
+        descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptor_write.descriptorCount = 1;
+        descriptor_write.pBufferInfo = &buffer_info;
+
+        vkUpdateDescriptorSets(g_device, 1, &descriptor_write, 0, nullptr);
+    }
+
+    free(layouts);
+}
+
 uint32_t vicFindMemoryType(uint32_t const filter, VkMemoryPropertyFlags const properties)
 {
     VkPhysicalDeviceMemoryProperties memory_properties = {};
@@ -1178,6 +1318,9 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
 
         vkCmdBindIndexBuffer(command_buffer, g_index_buffer, 0, VK_INDEX_TYPE_UINT16);
 
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline_layout,
+                                0, 1, &g_descriptor_sets[g_current_frame], 0, nullptr);
+
         vkCmdDrawIndexed(command_buffer, (uint32_t)k_INDICES_COUNT, 1, 0, 0, 0);
     }
     vkCmdEndRenderPass(command_buffer);
@@ -1206,6 +1349,8 @@ void vicDrawFrame()
         {
             vicDie("failed to acquire swap chain image");
         }
+
+        vicUpdateUniformData(g_current_frame);
     }
     vkResetFences(g_device, 1, &g_in_flight_fences[g_current_frame]);
 
@@ -1256,6 +1401,25 @@ void vicDrawFrame()
     }
 
     g_current_frame = (g_current_frame + 1) % k_MAX_FRAMES_IN_FLIGHT;
+}
+
+void vicUpdateUniformData(size_t const frame)
+{
+    struct timespec current_time;
+    timespec_get(&current_time, TIME_UTC);
+
+    float const seconds_passed = (current_time.tv_sec - g_start_time.tv_sec) +
+                                 (current_time.tv_nsec - g_start_time.tv_nsec) / 1e9;
+
+    UniformBufferObject ubo = {};
+    glm_mat4_identity(ubo.model);
+    glm_rotate(ubo.model, seconds_passed * glm_rad(90.0), (vec3){0.0, 0.0, 1.0});
+    glm_lookat((vec3){2.0, 2.0, 2.0}, (vec3){0.0, 0.0, 0.0}, (vec3){0.0, 0.0, 1.0}, ubo.view);
+    glm_perspective(45.0, (float)g_swap_chain_extent.width / (float)g_swap_chain_extent.height, 0.1,
+                    10.0, ubo.projection);
+    ubo.projection[1][1] *= -1;
+
+    memcpy(g_uniform_buffers_mapped[frame], &ubo, sizeof(ubo));
 }
 
 void vicCreateSyncObjects_DM()
@@ -1455,6 +1619,8 @@ vicDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT const severity,
 
 int main()
 {
+    timespec_get(&g_start_time, TIME_UTC);
+
     vicInitWindow();
     vicInitVulkan();
     vicMainLoop();
