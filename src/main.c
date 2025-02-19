@@ -8,6 +8,7 @@
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
+#include <cglm/cglm.h>
 #include <vulkan/vulkan.h>
 
 uint32_t const k_WINDOW_WIDTH = 1280;
@@ -40,6 +41,8 @@ VkPipelineLayout g_pipeline_layout;
 VkPipeline g_graphics_pipeline;
 VkFramebuffer *g_swap_chain_framebuffers;
 VkCommandPool g_command_pool;
+VkBuffer g_vertex_buffer;
+VkDeviceMemory g_vertex_buffer_memory;
 VkCommandBuffer *g_command_buffers;
 VkSemaphore *g_image_available_semaphores;
 VkSemaphore *g_render_finished_semaphores;
@@ -78,6 +81,48 @@ typedef struct S_SwapChainSupportDetails
     uint32_t present_modes_count;
 } SwapChainSupportDetails;
 
+typedef struct S_Vertex
+{
+    vec2 position;
+    vec3 color;
+} Vertex;
+
+Vertex const k_VERTICES[] = {
+    {{0.0, -0.5}, {1.0, 0.0, 0.0}},
+    {{0.5, 0.5}, {0.0, 1.0, 0.0}},
+    {{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+};
+size_t const k_VERTICES_COUNT = sizeof(k_VERTICES) / sizeof(Vertex);
+
+VkVertexInputBindingDescription vicGetVertexBindingDescription()
+{
+    VkVertexInputBindingDescription binding_description = {};
+    binding_description.binding = 0;
+    binding_description.stride = sizeof(Vertex);
+    binding_description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    return binding_description;
+}
+
+VkVertexInputAttributeDescription *vicGetVertexAttributeDescriptions_DM(
+    size_t *const attribute_descriptions_count)
+{
+    *attribute_descriptions_count = 2;
+    VkVertexInputAttributeDescription *attribute_descriptions =
+        calloc(*attribute_descriptions_count, sizeof(VkVertexInputAttributeDescription));
+
+    attribute_descriptions[0].binding = 0;
+    attribute_descriptions[0].location = 0;
+    attribute_descriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attribute_descriptions[0].offset = offsetof(Vertex, position);
+
+    attribute_descriptions[1].binding = 0;
+    attribute_descriptions[1].location = 1;
+    attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attribute_descriptions[1].offset = offsetof(Vertex, color);
+
+    return attribute_descriptions;
+}
+
 void vicCreateInstance();
 char **vicGetRequiredExtensions_DM(uint32_t *const);
 void vicCreateSurface();
@@ -98,6 +143,8 @@ char *vicReadFile_DM(char const *const, size_t *const);
 VkShaderModule vicCreateShaderModule(char const *const, size_t const);
 void vicCreateFramebuffers_DM();
 void vicCreateCommandPool();
+void vicCreateVertexBuffer();
+uint32_t vicFindMemoryType(uint32_t const, VkMemoryPropertyFlags const);
 void vicCreateCommandBuffers_DM();
 void vicRecordCommandBuffer(VkCommandBuffer const, size_t const);
 void vicDrawFrame();
@@ -160,6 +207,7 @@ void vicInitVulkan()
     vicCreateGraphicsPipeline();
     vicCreateFramebuffers_DM();
     vicCreateCommandPool();
+    vicCreateVertexBuffer();
     vicCreateCommandBuffers_DM();
     vicCreateSyncObjects_DM();
 }
@@ -177,6 +225,9 @@ void vicMainLoop()
 void vicCleanup()
 {
     vicCleanupSwapChain();
+
+    vkDestroyBuffer(g_device, g_vertex_buffer, nullptr);
+    vkFreeMemory(g_device, g_vertex_buffer_memory, nullptr);
 
     vkDestroyPipeline(g_device, g_graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(g_device, g_pipeline_layout, nullptr);
@@ -725,8 +776,17 @@ void vicCreateGraphicsPipeline()
 
     VkPipelineVertexInputStateCreateInfo vertex_input_create_info = {};
     vertex_input_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertex_input_create_info.vertexBindingDescriptionCount = 0;
-    vertex_input_create_info.vertexAttributeDescriptionCount = 0;
+
+    VkVertexInputBindingDescription const binding_description = vicGetVertexBindingDescription();
+    size_t attribute_descriptions_count = 0;
+    VkVertexInputAttributeDescription *const attribute_descriptions =
+        vicGetVertexAttributeDescriptions_DM(&attribute_descriptions_count);
+
+    vertex_input_create_info.vertexBindingDescriptionCount = 1;
+    vertex_input_create_info.vertexAttributeDescriptionCount =
+        (uint32_t)attribute_descriptions_count;
+    vertex_input_create_info.pVertexBindingDescriptions = &binding_description;
+    vertex_input_create_info.pVertexAttributeDescriptions = attribute_descriptions;
 
     VkPipelineInputAssemblyStateCreateInfo input_assembly_create_info = {};
     input_assembly_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -828,6 +888,7 @@ void vicCreateGraphicsPipeline()
     vkDestroyShaderModule(g_device, frag_shader_module, nullptr);
     vkDestroyShaderModule(g_device, vert_shader_module, nullptr);
 
+    free(attribute_descriptions);
     free(vert_shader_code);
     free(frag_shader_code);
 }
@@ -906,6 +967,63 @@ void vicCreateCommandPool()
     }
 }
 
+void vicCreateVertexBuffer()
+{
+    VkBufferCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    create_info.size = sizeof(k_VERTICES);
+    create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    if (vkCreateBuffer(g_device, &create_info, nullptr, &g_vertex_buffer) != VK_SUCCESS)
+    {
+        vicDie("failed to create vertex buffer");
+    }
+
+    VkMemoryRequirements memory_requirements = {};
+    vkGetBufferMemoryRequirements(g_device, g_vertex_buffer, &memory_requirements);
+
+    VkMemoryAllocateInfo allocation_info = {};
+    allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocation_info.allocationSize = memory_requirements.size;
+    allocation_info.memoryTypeIndex = vicFindMemoryType(memory_requirements.memoryTypeBits,
+                                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (vkAllocateMemory(g_device, &allocation_info, nullptr, &g_vertex_buffer_memory) !=
+        VK_SUCCESS)
+    {
+        vicDie("failed to allocate vertex buffer memory");
+    }
+
+    vkBindBufferMemory(g_device, g_vertex_buffer, g_vertex_buffer_memory, 0);
+
+    void *data;
+    vkMapMemory(g_device, g_vertex_buffer_memory, 0, create_info.size, 0, &data);
+    {
+        memcpy(data, k_VERTICES, (size_t)create_info.size);
+    }
+    vkUnmapMemory(g_device, g_vertex_buffer_memory);
+}
+
+uint32_t vicFindMemoryType(uint32_t const filter, VkMemoryPropertyFlags const properties)
+{
+    VkPhysicalDeviceMemoryProperties memory_properties = {};
+    vkGetPhysicalDeviceMemoryProperties(g_physical_device, &memory_properties);
+
+    for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++)
+    {
+        if ((filter & (1 << i)) &&
+            (memory_properties.memoryTypes[i].propertyFlags & properties) == properties)
+        {
+            return i;
+        }
+    }
+
+    vicDie("failed to find suitable memory type");
+    return 0;
+}
+
 void vicCreateCommandBuffers_DM()
 {
     g_command_buffers = calloc(k_MAX_FRAMES_IN_FLIGHT, sizeof(VkCommandBuffer));
@@ -961,7 +1079,11 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
         scissor.extent = g_swap_chain_extent;
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
 
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        VkBuffer const vertex_buffers[] = {g_vertex_buffer};
+        VkDeviceSize const offsets[] = {0};
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
+
+        vkCmdDraw(command_buffer, (uint32_t)k_VERTICES_COUNT, 1, 0, 0);
     }
     vkCmdEndRenderPass(command_buffer);
 
