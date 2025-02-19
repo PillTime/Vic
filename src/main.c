@@ -124,50 +124,51 @@ VkVertexInputAttributeDescription *vicGetVertexAttributeDescriptions_DM(
 }
 
 void vicCreateInstance();
-char **vicGetRequiredExtensions_DM(uint32_t *const);
+char **vicGetRequiredExtensions_DM(uint32_t *);
 void vicCreateSurface();
 void vicPickPhysicalDevice();
-bool vicDeviceIsSuitable(VkPhysicalDevice const);
-QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const);
+bool vicDeviceIsSuitable(VkPhysicalDevice);
+QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice);
 void vicCreateLogicalDevice();
-bool vicDeviceExtensionsSupported(VkPhysicalDevice const);
-SwapChainSupportDetails vicQuerySwapChainSupport_DM(VkPhysicalDevice const);
-VkSurfaceFormatKHR vicChooseSwapSurfaceFormat(VkSurfaceFormatKHR const *const, size_t const);
-VkPresentModeKHR vicChooseSwapPresentMode(VkPresentModeKHR const *const, size_t const);
-VkExtent2D vicChooseSwapExtent(VkSurfaceCapabilitiesKHR const *const);
+bool vicDeviceExtensionsSupported(VkPhysicalDevice);
+SwapChainSupportDetails vicQuerySwapChainSupport_DM(VkPhysicalDevice);
+VkSurfaceFormatKHR vicChooseSwapSurfaceFormat(VkSurfaceFormatKHR const *, size_t);
+VkPresentModeKHR vicChooseSwapPresentMode(VkPresentModeKHR const *, size_t);
+VkExtent2D vicChooseSwapExtent(VkSurfaceCapabilitiesKHR const *);
 void vicCreateSwapChain_DM();
 void vicCreateImageViews_DM();
 void vicCreateRenderPass();
 void vicCreateGraphicsPipeline();
-char *vicReadFile_DM(char const *const, size_t *const);
-VkShaderModule vicCreateShaderModule(char const *const, size_t const);
+char *vicReadFile_DM(char const *, size_t *);
+VkShaderModule vicCreateShaderModule(char const *, size_t);
 void vicCreateFramebuffers_DM();
 void vicCreateCommandPool();
+void vicCreateBuffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer *,
+                     VkDeviceMemory *);
+void vicCopyBuffer(VkBuffer, VkBuffer, VkDeviceSize);
 void vicCreateVertexBuffer();
-uint32_t vicFindMemoryType(uint32_t const, VkMemoryPropertyFlags const);
+uint32_t vicFindMemoryType(uint32_t, VkMemoryPropertyFlags);
 void vicCreateCommandBuffers_DM();
-void vicRecordCommandBuffer(VkCommandBuffer const, size_t const);
+void vicRecordCommandBuffer(VkCommandBuffer, size_t);
 void vicDrawFrame();
 void vicCreateSyncObjects_DM();
 void vicCleanupSwapChain();
 void vicRecreateSwapChain();
-void vicFramebufferResizeCallback(GLFWwindow *const, int const, int const);
+void vicFramebufferResizeCallback(GLFWwindow *, int, int);
 
 #ifndef NDEBUG
-void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *const);
+void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *);
 void vicSetupDebugMessenger();
 bool vicValidationLayersSupported();
 
-VkResult vicCreateDebugUtilsMessengerEXT(VkInstance const,
-                                         VkDebugUtilsMessengerCreateInfoEXT const *const,
-                                         VkAllocationCallbacks const *const,
-                                         VkDebugUtilsMessengerEXT *const);
-void vicDestroyDebugUtilsMessengerEXT(VkInstance const, VkDebugUtilsMessengerEXT const,
-                                      VkAllocationCallbacks const *const);
-VKAPI_ATTR VkBool32 VKAPI_CALL vicDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT const,
-                                                VkDebugUtilsMessageTypeFlagsEXT const,
-                                                VkDebugUtilsMessengerCallbackDataEXT const *const,
-                                                void *const);
+VkResult vicCreateDebugUtilsMessengerEXT(VkInstance, VkDebugUtilsMessengerCreateInfoEXT const *,
+                                         VkAllocationCallbacks const *, VkDebugUtilsMessengerEXT *);
+void vicDestroyDebugUtilsMessengerEXT(VkInstance, VkDebugUtilsMessengerEXT,
+                                      VkAllocationCallbacks const *);
+VKAPI_ATTR VkBool32 VKAPI_CALL vicDebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT,
+                                                VkDebugUtilsMessageTypeFlagsEXT,
+                                                VkDebugUtilsMessengerCallbackDataEXT const *,
+                                                void *);
 #endif
 
 uint32_t vicClamp(uint32_t const min, uint32_t const x, uint32_t const max)
@@ -967,43 +968,99 @@ void vicCreateCommandPool()
     }
 }
 
-void vicCreateVertexBuffer()
+void vicCreateBuffer(VkDeviceSize const size, VkBufferUsageFlags const usage,
+                     VkMemoryPropertyFlags const properties, VkBuffer *const buffer,
+                     VkDeviceMemory *const memory)
 {
     VkBufferCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    create_info.size = sizeof(k_VERTICES);
-    create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    create_info.size = size;
+    create_info.usage = usage;
     create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateBuffer(g_device, &create_info, nullptr, &g_vertex_buffer) != VK_SUCCESS)
+    if (vkCreateBuffer(g_device, &create_info, nullptr, buffer) != VK_SUCCESS)
     {
-        vicDie("failed to create vertex buffer");
+        vicDie("failed to create buffer");
     }
 
-    VkMemoryRequirements memory_requirements = {};
-    vkGetBufferMemoryRequirements(g_device, g_vertex_buffer, &memory_requirements);
+    VkMemoryRequirements requirements = {};
+    vkGetBufferMemoryRequirements(g_device, *buffer, &requirements);
 
     VkMemoryAllocateInfo allocation_info = {};
     allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocation_info.allocationSize = memory_requirements.size;
-    allocation_info.memoryTypeIndex = vicFindMemoryType(memory_requirements.memoryTypeBits,
-                                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    allocation_info.allocationSize = requirements.size;
+    allocation_info.memoryTypeIndex = vicFindMemoryType(requirements.memoryTypeBits, properties);
 
-    if (vkAllocateMemory(g_device, &allocation_info, nullptr, &g_vertex_buffer_memory) !=
-        VK_SUCCESS)
+    if (vkAllocateMemory(g_device, &allocation_info, nullptr, memory) != VK_SUCCESS)
     {
-        vicDie("failed to allocate vertex buffer memory");
+        vicDie("failed to allocate buffer memory");
     }
 
-    vkBindBufferMemory(g_device, g_vertex_buffer, g_vertex_buffer_memory, 0);
+    vkBindBufferMemory(g_device, *buffer, *memory, 0);
+}
+
+void vicCopyBuffer(VkBuffer const src, VkBuffer const dst, VkDeviceSize const size)
+{
+    VkCommandBufferAllocateInfo allocation_info = {};
+    allocation_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocation_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocation_info.commandPool = g_command_pool;
+    allocation_info.commandBufferCount = 1;
+
+    VkCommandBuffer command_buffer;
+    vkAllocateCommandBuffers(g_device, &allocation_info, &command_buffer);
+
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(command_buffer, &begin_info);
+    {
+        VkBufferCopy copy_region = {};
+        copy_region.srcOffset = 0;
+        copy_region.dstOffset = 0;
+        copy_region.size = size;
+
+        vkCmdCopyBuffer(command_buffer, src, dst, 1, &copy_region);
+    }
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+
+    vkQueueSubmit(g_graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g_graphics_queue);
+
+    vkFreeCommandBuffers(g_device, g_command_pool, 1, &command_buffer);
+}
+
+void vicCreateVertexBuffer()
+{
+    VkDeviceSize const buffer_size = sizeof(k_VERTICES);
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    vicCreateBuffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    &staging_buffer, &staging_buffer_memory);
 
     void *data;
-    vkMapMemory(g_device, g_vertex_buffer_memory, 0, create_info.size, 0, &data);
+    vkMapMemory(g_device, staging_buffer_memory, 0, buffer_size, 0, &data);
     {
-        memcpy(data, k_VERTICES, (size_t)create_info.size);
+        memcpy(data, k_VERTICES, (size_t)buffer_size);
     }
-    vkUnmapMemory(g_device, g_vertex_buffer_memory);
+    vkUnmapMemory(g_device, staging_buffer_memory);
+
+    vicCreateBuffer(buffer_size,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_vertex_buffer, &g_vertex_buffer_memory);
+
+    vicCopyBuffer(staging_buffer, g_vertex_buffer, buffer_size);
+
+    vkDestroyBuffer(g_device, staging_buffer, nullptr);
+    vkFreeMemory(g_device, staging_buffer_memory, nullptr);
 }
 
 uint32_t vicFindMemoryType(uint32_t const filter, VkMemoryPropertyFlags const properties)
