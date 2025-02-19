@@ -43,6 +43,8 @@ VkFramebuffer *g_swap_chain_framebuffers;
 VkCommandPool g_command_pool;
 VkBuffer g_vertex_buffer;
 VkDeviceMemory g_vertex_buffer_memory;
+VkBuffer g_index_buffer;
+VkDeviceMemory g_index_buffer_memory;
 VkCommandBuffer *g_command_buffers;
 VkSemaphore *g_image_available_semaphores;
 VkSemaphore *g_render_finished_semaphores;
@@ -88,11 +90,14 @@ typedef struct S_Vertex
 } Vertex;
 
 Vertex const k_VERTICES[] = {
-    {{0.0, -0.5}, {1.0, 0.0, 0.0}},
-    {{0.5, 0.5}, {0.0, 1.0, 0.0}},
-    {{-0.5, 0.5}, {0.0, 0.0, 1.0}},
+    {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
+    {{0.5, -0.5}, {0.0, 1.0, 0.0}},
+    {{0.5, 0.5}, {0.0, 0.0, 1.0}},
+    {{-0.5, 0.5}, {1.0, 1.0, 1.0}},
 };
 size_t const k_VERTICES_COUNT = sizeof(k_VERTICES) / sizeof(Vertex);
+uint16_t const k_INDICES[] = {0, 1, 2, 2, 3, 0};
+size_t const k_INDICES_COUNT = sizeof(k_INDICES) / sizeof(uint16_t);
 
 VkVertexInputBindingDescription vicGetVertexBindingDescription()
 {
@@ -147,6 +152,7 @@ void vicCreateBuffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, Vk
                      VkDeviceMemory *);
 void vicCopyBuffer(VkBuffer, VkBuffer, VkDeviceSize);
 void vicCreateVertexBuffer();
+void vicCreateIndexBuffer();
 uint32_t vicFindMemoryType(uint32_t, VkMemoryPropertyFlags);
 void vicCreateCommandBuffers_DM();
 void vicRecordCommandBuffer(VkCommandBuffer, size_t);
@@ -209,6 +215,7 @@ void vicInitVulkan()
     vicCreateFramebuffers_DM();
     vicCreateCommandPool();
     vicCreateVertexBuffer();
+    vicCreateIndexBuffer();
     vicCreateCommandBuffers_DM();
     vicCreateSyncObjects_DM();
 }
@@ -227,6 +234,8 @@ void vicCleanup()
 {
     vicCleanupSwapChain();
 
+    vkDestroyBuffer(g_device, g_index_buffer, nullptr);
+    vkFreeMemory(g_device, g_index_buffer_memory, nullptr);
     vkDestroyBuffer(g_device, g_vertex_buffer, nullptr);
     vkFreeMemory(g_device, g_vertex_buffer_memory, nullptr);
 
@@ -1063,6 +1072,33 @@ void vicCreateVertexBuffer()
     vkFreeMemory(g_device, staging_buffer_memory, nullptr);
 }
 
+void vicCreateIndexBuffer()
+{
+    VkDeviceSize const buffer_size = sizeof(k_INDICES);
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    vicCreateBuffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    &staging_buffer, &staging_buffer_memory);
+
+    void *data;
+    vkMapMemory(g_device, staging_buffer_memory, 0, buffer_size, 0, &data);
+    {
+        memcpy(data, k_INDICES, (size_t)buffer_size);
+    }
+    vkUnmapMemory(g_device, staging_buffer_memory);
+
+    vicCreateBuffer(buffer_size,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_index_buffer, &g_index_buffer_memory);
+
+    vicCopyBuffer(staging_buffer, g_index_buffer, buffer_size);
+
+    vkDestroyBuffer(g_device, staging_buffer, nullptr);
+    vkFreeMemory(g_device, staging_buffer_memory, nullptr);
+}
+
 uint32_t vicFindMemoryType(uint32_t const filter, VkMemoryPropertyFlags const properties)
 {
     VkPhysicalDeviceMemoryProperties memory_properties = {};
@@ -1140,7 +1176,9 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
         VkDeviceSize const offsets[] = {0};
         vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
 
-        vkCmdDraw(command_buffer, (uint32_t)k_VERTICES_COUNT, 1, 0, 0);
+        vkCmdBindIndexBuffer(command_buffer, g_index_buffer, 0, VK_INDEX_TYPE_UINT16);
+
+        vkCmdDrawIndexed(command_buffer, (uint32_t)k_INDICES_COUNT, 1, 0, 0, 0);
     }
     vkCmdEndRenderPass(command_buffer);
 
