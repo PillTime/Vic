@@ -8,13 +8,19 @@
 #include <string.h>
 #include <time.h>
 
-#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
-#define GLFW_INCLUDE_VULKAN
 #define STB_IMAGE_IMPLEMENTATION
-
-#include <GLFW/glfw3.h>
-#include <cglm/cglm.h>
 #include <stb/stb_image.h>
+
+#define FAST_OBJ_IMPLEMENTATION
+#define FAST_OBJ_UINT_TYPE size_t
+#include <fast_obj/fast_obj.h>
+
+#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <cglm/cglm.h>
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
 #include <vulkan/vulkan.h>
 
 uint32_t const k_WINDOW_WIDTH = 1280;
@@ -23,57 +29,12 @@ char const *const k_APP_NAME = "vic";
 char const *const k_DEVICE_EXTENSIONS[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 size_t const k_DEVICE_EXTENSIONS_COUNT = sizeof(k_DEVICE_EXTENSIONS) / sizeof(char const *);
 uint32_t const k_MAX_FRAMES_IN_FLIGHT = 2;
+char const k_MODEL_PATH[] = "mdl/viking.obj";
+char const k_TEXTURE_PATH[] = "txt/viking.png";
 
 #ifndef NDEBUG
 char const *const k_VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
 size_t const k_VALIDATION_LAYERS_COUNT = sizeof(k_VALIDATION_LAYERS) / sizeof(char const *);
-#endif
-
-struct timespec g_start_time;
-GLFWwindow *g_window;
-VkInstance g_instance;
-VkPhysicalDevice g_physical_device = VK_NULL_HANDLE;
-VkDevice g_device;
-VkSurfaceKHR g_surface;
-VkQueue g_graphics_queue;
-VkQueue g_present_queue;
-VkSwapchainKHR g_swap_chain;
-VkImage *g_swap_chain_images;
-VkImageView *g_swap_chain_image_views;
-uint32_t g_swap_chain_images_count;
-VkFormat g_swap_chain_image_format;
-VkExtent2D g_swap_chain_extent;
-VkRenderPass g_render_pass;
-VkDescriptorSetLayout g_descriptor_set_layout;
-VkPipelineLayout g_pipeline_layout;
-VkPipeline g_graphics_pipeline;
-VkFramebuffer *g_swap_chain_framebuffers;
-VkCommandPool g_command_pool;
-VkBuffer g_vertex_buffer;
-VkDeviceMemory g_vertex_buffer_memory;
-VkBuffer g_index_buffer;
-VkDeviceMemory g_index_buffer_memory;
-VkBuffer *g_uniform_buffers;
-VkDeviceMemory *g_uniform_buffers_memory;
-void **g_uniform_buffers_mapped;
-VkDescriptorPool g_descriptor_pool;
-VkDescriptorSet *g_descriptor_sets;
-VkCommandBuffer *g_command_buffers;
-VkSemaphore *g_image_available_semaphores;
-VkSemaphore *g_render_finished_semaphores;
-VkFence *g_in_flight_fences;
-size_t g_current_frame = 0;
-bool g_framebuffer_resized = false;
-VkImage g_texture_image;
-VkDeviceMemory g_texture_image_memory;
-VkImageView g_texture_image_view;
-VkSampler g_texture_sampler;
-VkImage g_depth_image;
-VkDeviceMemory g_depth_image_memory;
-VkImageView g_depth_image_view;
-
-#ifndef NDEBUG
-VkDebugUtilsMessengerEXT g_debug_messenger;
 #endif
 
 typedef struct S_QueueFamilyIndices
@@ -110,20 +71,56 @@ typedef struct S_Vertex
     vec2 texture_coords;
 } Vertex;
 
-Vertex const k_VERTICES[] = {
-    {{-0.5, -0.5, 0.0}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-    {{0.5, -0.5, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
-    {{0.5, 0.5, 0.0}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-    {{-0.5, 0.5, 0.0}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
+struct timespec g_start_time;
+GLFWwindow *g_window;
+VkInstance g_instance;
+VkPhysicalDevice g_physical_device = VK_NULL_HANDLE;
+VkDevice g_device;
+VkSurfaceKHR g_surface;
+VkQueue g_graphics_queue;
+VkQueue g_present_queue;
+VkSwapchainKHR g_swap_chain;
+VkImage *g_swap_chain_images;
+VkImageView *g_swap_chain_image_views;
+uint32_t g_swap_chain_images_count;
+VkFormat g_swap_chain_image_format;
+VkExtent2D g_swap_chain_extent;
+VkRenderPass g_render_pass;
+VkDescriptorSetLayout g_descriptor_set_layout;
+VkPipelineLayout g_pipeline_layout;
+VkPipeline g_graphics_pipeline;
+VkFramebuffer *g_swap_chain_framebuffers;
+VkCommandPool g_command_pool;
+VkBuffer g_vertex_buffer;
+VkDeviceMemory g_vertex_buffer_memory;
+VkBuffer g_index_buffer;
+VkDeviceMemory g_index_buffer_memory;
+Vertex *g_vertices;
+size_t g_vertices_count;
+uint32_t *g_indices;
+size_t g_indices_count;
+VkBuffer *g_uniform_buffers;
+VkDeviceMemory *g_uniform_buffers_memory;
+void **g_uniform_buffers_mapped;
+VkDescriptorPool g_descriptor_pool;
+VkDescriptorSet *g_descriptor_sets;
+VkCommandBuffer *g_command_buffers;
+VkSemaphore *g_image_available_semaphores;
+VkSemaphore *g_render_finished_semaphores;
+VkFence *g_in_flight_fences;
+size_t g_current_frame = 0;
+bool g_framebuffer_resized = false;
+VkImage g_texture_image;
+VkDeviceMemory g_texture_image_memory;
+VkImageView g_texture_image_view;
+VkSampler g_texture_sampler;
+VkImage g_depth_image;
+VkDeviceMemory g_depth_image_memory;
+VkImageView g_depth_image_view;
 
-    {{-0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-    {{0.5, -0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
-    {{0.5, 0.5, -0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-    {{-0.5, 0.5, -0.5}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
-};
-size_t const k_VERTICES_COUNT = sizeof(k_VERTICES) / sizeof(Vertex);
-uint16_t const k_INDICES[] = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
-size_t const k_INDICES_COUNT = sizeof(k_INDICES) / sizeof(uint16_t);
+#ifndef NDEBUG
+VkDebugUtilsMessengerEXT g_debug_messenger;
+#endif
 
 VkVertexInputBindingDescription vicGetVertexBindingDescription()
 {
@@ -196,6 +193,7 @@ void vicCreateImage(uint32_t, uint32_t, VkFormat, VkImageTiling, VkImageUsageFla
 void vicCreateBuffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer *,
                      VkDeviceMemory *);
 void vicCopyBuffer(VkBuffer, VkBuffer, VkDeviceSize);
+void vicLoadModel_DM();
 void vicCreateVertexBuffer();
 void vicCreateIndexBuffer();
 void vicCreateUniformBuffers_DM();
@@ -276,6 +274,7 @@ void vicInitVulkan()
     vicCreateTextureImage();
     vicCreateTextureImageView();
     vicCreateTextureSampler();
+    vicLoadModel_DM();
     vicCreateVertexBuffer();
     vicCreateIndexBuffer();
     vicCreateUniformBuffers_DM();
@@ -321,6 +320,8 @@ void vicCleanup()
     vkFreeMemory(g_device, g_index_buffer_memory, nullptr);
     vkDestroyBuffer(g_device, g_vertex_buffer, nullptr);
     vkFreeMemory(g_device, g_vertex_buffer_memory, nullptr);
+    free(g_indices);
+    free(g_vertices);
 
     vkDestroyPipeline(g_device, g_graphics_pipeline, nullptr);
     vkDestroyPipelineLayout(g_device, g_pipeline_layout, nullptr);
@@ -1130,7 +1131,7 @@ VkImageView vicCreateImageView(VkImage const image, VkFormat const format,
 void vicCreateTextureImage()
 {
     int width, height, channels;
-    stbi_uc *const image = stbi_load("txt/statue.jpg", &width, &height, &channels, STBI_rgb_alpha);
+    stbi_uc *const image = stbi_load(k_TEXTURE_PATH, &width, &height, &channels, STBI_rgb_alpha);
     VkDeviceSize image_size = width * height * 4;
 
     if (!image)
@@ -1285,9 +1286,62 @@ void vicCopyBuffer(VkBuffer const src, VkBuffer const dst, VkDeviceSize const si
     vicEndSingleTimeCommands(command_buffer);
 }
 
+void vicLoadModel_DM()
+{
+    fastObjMesh *const mesh = fast_obj_read(k_MODEL_PATH);
+    if (!mesh)
+    {
+        vicDie("failed to read model");
+    }
+
+    g_indices_count = mesh->index_count;
+    g_vertices_count = g_indices_count;
+
+    g_vertices = calloc(mesh->index_count, sizeof(Vertex));
+    g_indices = calloc(mesh->index_count, sizeof(uint32_t));
+
+    for (size_t i = 0, v_idx = 0; i < mesh->object_count; i++)
+    {
+        fastObjGroup const *const object = &mesh->objects[i];
+
+        for (size_t j = 0, idx = 0; j < object->face_count; j++)
+        {
+            size_t const object_faces_idx = object->face_offset + j;
+            size_t const face_num_vertices = mesh->face_vertices[object_faces_idx];
+
+            for (size_t k = 0; k < face_num_vertices; k++, idx++, v_idx++)
+            {
+                size_t const object_indices_idx = object->index_offset + idx;
+                size_t const object_vertex = 3 * mesh->indices[object_indices_idx].p;
+                size_t const object_texcoord = 2 * mesh->indices[object_indices_idx].t;
+
+                Vertex const vertex = {
+                    .color = {1.0, 1.0, 1.0},
+                    .position =
+                        {
+                            mesh->positions[object_vertex + 0],
+                            mesh->positions[object_vertex + 1],
+                            mesh->positions[object_vertex + 2],
+                        },
+                    .texture_coords =
+                        {
+                            mesh->texcoords[object_texcoord + 0],
+                            1.0 - mesh->texcoords[object_texcoord + 1],
+                        },
+                };
+
+                g_vertices[v_idx] = vertex;
+                g_indices[v_idx] = v_idx;
+            }
+        }
+    }
+
+    fast_obj_destroy(mesh);
+}
+
 void vicCreateVertexBuffer()
 {
-    VkDeviceSize const buffer_size = sizeof(k_VERTICES);
+    VkDeviceSize const buffer_size = g_vertices_count * sizeof(Vertex);
 
     VkBuffer staging_buffer;
     VkDeviceMemory staging_buffer_memory;
@@ -1298,7 +1352,7 @@ void vicCreateVertexBuffer()
     void *data;
     vkMapMemory(g_device, staging_buffer_memory, 0, buffer_size, 0, &data);
     {
-        memcpy(data, k_VERTICES, (size_t)buffer_size);
+        memcpy(data, g_vertices, (size_t)buffer_size);
     }
     vkUnmapMemory(g_device, staging_buffer_memory);
 
@@ -1314,7 +1368,7 @@ void vicCreateVertexBuffer()
 
 void vicCreateIndexBuffer()
 {
-    VkDeviceSize const buffer_size = sizeof(k_INDICES);
+    VkDeviceSize const buffer_size = g_indices_count * sizeof(uint32_t);
 
     VkBuffer staging_buffer;
     VkDeviceMemory staging_buffer_memory;
@@ -1325,7 +1379,7 @@ void vicCreateIndexBuffer()
     void *data;
     vkMapMemory(g_device, staging_buffer_memory, 0, buffer_size, 0, &data);
     {
-        memcpy(data, k_INDICES, (size_t)buffer_size);
+        memcpy(data, g_indices, (size_t)buffer_size);
     }
     vkUnmapMemory(g_device, staging_buffer_memory);
 
@@ -1526,12 +1580,12 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
         VkDeviceSize const offsets[] = {0};
         vkCmdBindVertexBuffers(command_buffer, 0, 1, vertex_buffers, offsets);
 
-        vkCmdBindIndexBuffer(command_buffer, g_index_buffer, 0, VK_INDEX_TYPE_UINT16);
+        vkCmdBindIndexBuffer(command_buffer, g_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeline_layout,
                                 0, 1, &g_descriptor_sets[g_current_frame], 0, nullptr);
 
-        vkCmdDrawIndexed(command_buffer, (uint32_t)k_INDICES_COUNT, 1, 0, 0, 0);
+        vkCmdDrawIndexed(command_buffer, (uint32_t)g_indices_count, 1, 0, 0, 0);
     }
     vkCmdEndRenderPass(command_buffer);
 
@@ -1623,7 +1677,7 @@ void vicUpdateUniformData(size_t const frame)
 
     UniformBufferObject ubo = {};
     glm_mat4_identity(ubo.model);
-    glm_rotate(ubo.model, seconds_passed * glm_rad(90.0), (vec3){0.0, 0.0, 1.0});
+    glm_rotate(ubo.model, seconds_passed * glm_rad(45.0), (vec3){0.0, 0.0, 1.0});
     glm_lookat((vec3){2.0, 2.0, 2.0}, (vec3){0.0, 0.0, 0.0}, (vec3){0.0, 0.0, 1.0}, ubo.view);
     glm_perspective(45.0, (float)g_swap_chain_extent.width / (float)g_swap_chain_extent.height, 0.1,
                     10.0, ubo.projection);
