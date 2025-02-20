@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLFW_INCLUDE_VULKAN
 #define STB_IMAGE_IMPLEMENTATION
 
@@ -67,6 +68,9 @@ VkImage g_texture_image;
 VkDeviceMemory g_texture_image_memory;
 VkImageView g_texture_image_view;
 VkSampler g_texture_sampler;
+VkImage g_depth_image;
+VkDeviceMemory g_depth_image_memory;
+VkImageView g_depth_image_view;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -101,19 +105,24 @@ typedef struct S_SwapChainSupportDetails
 
 typedef struct S_Vertex
 {
-    vec2 position;
+    vec3 position;
     vec3 color;
     vec2 texture_coords;
 } Vertex;
 
 Vertex const k_VERTICES[] = {
-    {{-0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
-    {{0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
-    {{0.5, 0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
-    {{-0.5, 0.5}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
+    {{-0.5, -0.5, 0.0}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+    {{0.5, -0.5, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
+    {{0.5, 0.5, 0.0}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+    {{-0.5, 0.5, 0.0}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
+
+    {{-0.5, -0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0, 0.0}},
+    {{0.5, -0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0, 0.0}},
+    {{0.5, 0.5, -0.5}, {0.0, 0.0, 1.0}, {0.0, 1.0}},
+    {{-0.5, 0.5, -0.5}, {1.0, 1.0, 1.0}, {1.0, 1.0}},
 };
 size_t const k_VERTICES_COUNT = sizeof(k_VERTICES) / sizeof(Vertex);
-uint16_t const k_INDICES[] = {0, 1, 2, 2, 3, 0};
+uint16_t const k_INDICES[] = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
 size_t const k_INDICES_COUNT = sizeof(k_INDICES) / sizeof(uint16_t);
 
 VkVertexInputBindingDescription vicGetVertexBindingDescription()
@@ -134,7 +143,7 @@ VkVertexInputAttributeDescription *vicGetVertexAttributeDescriptions_DM(
 
     attribute_descriptions[0].binding = 0;
     attribute_descriptions[0].location = 0;
-    attribute_descriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attribute_descriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attribute_descriptions[0].offset = offsetof(Vertex, position);
 
     attribute_descriptions[1].binding = 0;
@@ -178,7 +187,7 @@ char *vicReadFile_DM(char const *, size_t *);
 VkShaderModule vicCreateShaderModule(char const *, size_t);
 void vicCreateFramebuffers_DM();
 void vicCreateCommandPool();
-VkImageView vicCreateImageView(VkImage, VkFormat);
+VkImageView vicCreateImageView(VkImage, VkFormat, VkImageAspectFlags);
 void vicCreateTextureImage();
 void vicCreateTextureImageView();
 void vicCreateTextureSampler();
@@ -205,6 +214,10 @@ VkCommandBuffer vicBeginSingleTimeCommands();
 void vicEndSingleTimeCommands(VkCommandBuffer);
 void vicTransitionImageLayout(VkImage, VkFormat, VkImageLayout, VkImageLayout);
 void vicCopyBufferToImage(VkBuffer, VkImage, uint32_t, uint32_t);
+VkFormat vicFindSupportedFormat(VkFormat const *, size_t, VkImageTiling, VkFormatFeatureFlags);
+VkFormat vicFindDepthFormat();
+bool vicHasStencilComponent(VkFormat);
+void vicCreateDepthResources();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *);
@@ -226,7 +239,7 @@ uint32_t vicClamp(uint32_t const min, uint32_t const x, uint32_t const max)
     return x < min ? min : x > max ? max : x;
 }
 
-void vicDie(char const *const msg)
+[[noreturn]] void vicDie(char const *const msg)
 {
     fputs(msg, stderr);
     fflush(stderr);
@@ -257,8 +270,9 @@ void vicInitVulkan()
     vicCreateRenderPass();
     vicCreateDescriptorSetLayout();
     vicCreateGraphicsPipeline();
-    vicCreateFramebuffers_DM();
     vicCreateCommandPool();
+    vicCreateDepthResources();
+    vicCreateFramebuffers_DM();
     vicCreateTextureImage();
     vicCreateTextureImageView();
     vicCreateTextureSampler();
@@ -758,44 +772,65 @@ void vicCreateImageViews_DM()
     g_swap_chain_image_views = calloc(g_swap_chain_images_count, sizeof(VkImageView));
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
-        g_swap_chain_image_views[i] =
-            vicCreateImageView(g_swap_chain_images[i], g_swap_chain_image_format);
+        g_swap_chain_image_views[i] = vicCreateImageView(
+            g_swap_chain_images[i], g_swap_chain_image_format, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 }
 
 void vicCreateRenderPass()
 {
-    VkAttachmentDescription attachment = {};
-    attachment.format = g_swap_chain_image_format;
-    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    VkAttachmentDescription color_attachment = {};
+    color_attachment.format = g_swap_chain_image_format;
+    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    VkAttachmentReference attachment_reference = {};
-    attachment_reference.attachment = 0;
-    attachment_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference color_attachment_reference = {};
+    color_attachment_reference.attachment = 0;
+    color_attachment_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription depth_attachment = {};
+    depth_attachment.format = vicFindDepthFormat();
+    depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_attachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depth_attachment_reference = {};
+    depth_attachment_reference.attachment = 1;
+    depth_attachment_reference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &attachment_reference;
+    subpass.pColorAttachments = &color_attachment_reference;
+    subpass.pDepthStencilAttachment = &depth_attachment_reference;
 
     VkSubpassDependency dependency = {};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask =
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription const attachments[] = {color_attachment, depth_attachment};
+    size_t const attachments_count = sizeof(attachments) / sizeof(VkAttachmentDescription);
 
     VkRenderPassCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    create_info.attachmentCount = 1;
-    create_info.pAttachments = &attachment;
+    create_info.attachmentCount = (uint32_t)attachments_count;
+    create_info.pAttachments = attachments;
     create_info.subpassCount = 1;
     create_info.pSubpasses = &subpass;
     create_info.dependencyCount = 1;
@@ -944,6 +979,14 @@ void vicCreateGraphicsPipeline()
     color_blend_create_info.attachmentCount = 1;
     color_blend_create_info.pAttachments = &color_blend_attachment;
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_create_info = {};
+    depth_stencil_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_create_info.depthTestEnable = VK_TRUE;
+    depth_stencil_create_info.depthWriteEnable = VK_TRUE;
+    depth_stencil_create_info.depthCompareOp = VK_COMPARE_OP_LESS;
+    depth_stencil_create_info.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_create_info.stencilTestEnable = VK_FALSE;
+
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {};
     pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipeline_layout_create_info.setLayoutCount = 1;
@@ -966,6 +1009,7 @@ void vicCreateGraphicsPipeline()
     create_info.pMultisampleState = &multisample_create_info;
     create_info.pColorBlendState = &color_blend_create_info;
     create_info.pDynamicState = &dynamic_create_info;
+    create_info.pDepthStencilState = &depth_stencil_create_info;
     create_info.layout = g_pipeline_layout;
     create_info.renderPass = g_render_pass;
     create_info.subpass = 0;
@@ -1026,12 +1070,13 @@ void vicCreateFramebuffers_DM()
 
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
-        VkImageView const attachments[] = {g_swap_chain_image_views[i]};
+        VkImageView const attachments[] = {g_swap_chain_image_views[i], g_depth_image_view};
+        size_t const attachments_count = sizeof(attachments) / sizeof(VkImageView);
 
         VkFramebufferCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         create_info.renderPass = g_render_pass;
-        create_info.attachmentCount = 1;
+        create_info.attachmentCount = (uint32_t)attachments_count;
         create_info.pAttachments = attachments;
         create_info.width = g_swap_chain_extent.width;
         create_info.height = g_swap_chain_extent.height;
@@ -1060,14 +1105,15 @@ void vicCreateCommandPool()
     }
 }
 
-VkImageView vicCreateImageView(VkImage const image, VkFormat const format)
+VkImageView vicCreateImageView(VkImage const image, VkFormat const format,
+                               VkImageAspectFlags const aspect)
 {
     VkImageViewCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     create_info.image = image;
     create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     create_info.format = format;
-    create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    create_info.subresourceRange.aspectMask = aspect;
     create_info.subresourceRange.baseMipLevel = 0;
     create_info.subresourceRange.levelCount = 1;
     create_info.subresourceRange.baseArrayLayer = 0;
@@ -1124,7 +1170,8 @@ void vicCreateTextureImage()
 
 void vicCreateTextureImageView()
 {
-    g_texture_image_view = vicCreateImageView(g_texture_image, VK_FORMAT_R8G8B8A8_SRGB);
+    g_texture_image_view =
+        vicCreateImageView(g_texture_image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 void vicCreateTextureSampler()
@@ -1413,7 +1460,6 @@ uint32_t vicFindMemoryType(uint32_t const filter, VkMemoryPropertyFlags const pr
     }
 
     vicDie("failed to find suitable memory type");
-    return 0;
 }
 
 void vicCreateCommandBuffers_DM()
@@ -1449,9 +1495,14 @@ void vicRecordCommandBuffer(VkCommandBuffer const command_buffer, size_t const i
     render_pass_begin_info.renderArea.offset = (VkOffset2D){.x = 0, .y = 0};
     render_pass_begin_info.renderArea.extent = g_swap_chain_extent;
 
-    VkClearValue const clear_color = {{{0.0, 0.0, 0.0, 1.0}}};
-    render_pass_begin_info.clearValueCount = 1;
-    render_pass_begin_info.pClearValues = &clear_color;
+    VkClearValue const clear_values[] = {
+        {.color = {{0.0, 0.0, 0.0, 1.0}}},
+        {.depthStencil = {1.0, 0.0}},
+    };
+    size_t const clear_values_count = sizeof(clear_values) / sizeof(VkClearValue);
+
+    render_pass_begin_info.clearValueCount = clear_values_count;
+    render_pass_begin_info.pClearValues = clear_values;
 
     vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
     {
@@ -1609,6 +1660,10 @@ void vicCreateSyncObjects_DM()
 
 void vicCleanupSwapChain()
 {
+    vkDestroyImageView(g_device, g_depth_image_view, nullptr);
+    vkDestroyImage(g_device, g_depth_image, nullptr);
+    vkFreeMemory(g_device, g_depth_image_memory, nullptr);
+
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
         vkDestroyFramebuffer(g_device, g_swap_chain_framebuffers[i], nullptr);
@@ -1641,6 +1696,7 @@ void vicRecreateSwapChain()
 
     vicCreateSwapChain_DM();
     vicCreateImageViews_DM();
+    vicCreateDepthResources();
     vicCreateFramebuffers_DM();
 }
 
@@ -1697,11 +1753,23 @@ void vicTransitionImageLayout(VkImage const image, [[maybe_unused]] VkFormat con
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
+
+        if (new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        {
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (vicHasStencilComponent(format))
+            {
+                barrier.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+        }
+        else
+        {
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        }
 
         VkPipelineStageFlags source_stage;
         VkPipelineStageFlags destination_stage;
@@ -1724,11 +1792,19 @@ void vicTransitionImageLayout(VkImage const image, [[maybe_unused]] VkFormat con
             source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
+        else if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED &&
+                 new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+            source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destination_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        }
         else
         {
             vicDie("unsupported layout transition");
-            source_stage = 0;
-            destination_stage = 0;
         }
 
         vkCmdPipelineBarrier(command_buffer, source_stage, destination_stage, 0, 0, nullptr, 0,
@@ -1757,6 +1833,56 @@ void vicCopyBufferToImage(VkBuffer const buffer, VkImage const image, uint32_t c
                                1, &copy_region);
     }
     vicEndSingleTimeCommands(command_buffer);
+}
+
+VkFormat vicFindSupportedFormat(VkFormat const *const candidates, size_t const candidates_count,
+                                VkImageTiling const tiling, VkFormatFeatureFlags const features)
+{
+    for (size_t i = 0; i < candidates_count; i++)
+    {
+        VkFormatProperties properties = {};
+        vkGetPhysicalDeviceFormatProperties(g_physical_device, candidates[i], &properties);
+
+        if (tiling == VK_IMAGE_TILING_LINEAR &&
+            (properties.linearTilingFeatures & features) == features)
+        {
+            return candidates[i];
+        }
+        else if (tiling == VK_IMAGE_TILING_OPTIMAL &&
+                 (properties.optimalTilingFeatures & features) == features)
+        {
+            return candidates[i];
+        }
+    }
+
+    vicDie("failed to find supported format");
+}
+
+VkFormat vicFindDepthFormat()
+{
+    VkFormat const formats[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                VK_FORMAT_D24_UNORM_S8_UINT};
+    size_t const formats_count = sizeof(formats) / sizeof(VkFormat);
+    return vicFindSupportedFormat(formats, formats_count, VK_IMAGE_TILING_OPTIMAL,
+                                  VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
+bool vicHasStencilComponent(VkFormat const format)
+{
+    return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
+}
+
+void vicCreateDepthResources()
+{
+    VkFormat const depth_format = vicFindDepthFormat();
+
+    vicCreateImage(g_swap_chain_extent.width, g_swap_chain_extent.height, depth_format,
+                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_depth_image, &g_depth_image_memory);
+    g_depth_image_view = vicCreateImageView(g_depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    vicTransitionImageLayout(g_depth_image, depth_format, VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 }
 
 #ifndef NDEBUG
