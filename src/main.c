@@ -8,6 +8,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <uthash.h>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb/stb_image.h>
 
@@ -1295,12 +1297,22 @@ void vicLoadModel_DM()
     }
 
     g_indices_count = mesh->index_count;
-    g_vertices_count = g_indices_count;
 
-    g_vertices = calloc(mesh->index_count, sizeof(Vertex));
-    g_indices = calloc(mesh->index_count, sizeof(uint32_t));
+    g_vertices = calloc(g_indices_count, sizeof(Vertex));
+    g_indices = calloc(g_indices_count, sizeof(uint32_t));
 
-    for (size_t i = 0, v_idx = 0; i < mesh->object_count; i++)
+    g_vertices_count = 0;
+
+    typedef struct S_Hash
+    {
+        Vertex key;
+        uint32_t value;
+        UT_hash_handle hh;
+    } Hash;
+    Hash *map = nullptr;
+
+    size_t v_idx = 0;
+    for (size_t i = 0, i_idx = 0; i < mesh->object_count; i++)
     {
         fastObjGroup const *const object = &mesh->objects[i];
 
@@ -1309,7 +1321,7 @@ void vicLoadModel_DM()
             size_t const object_faces_idx = object->face_offset + j;
             size_t const face_num_vertices = mesh->face_vertices[object_faces_idx];
 
-            for (size_t k = 0; k < face_num_vertices; k++, idx++, v_idx++)
+            for (size_t k = 0; k < face_num_vertices; k++, idx++, i_idx++)
             {
                 size_t const object_indices_idx = object->index_offset + idx;
                 size_t const object_vertex = 3 * mesh->indices[object_indices_idx].p;
@@ -1330,12 +1342,32 @@ void vicLoadModel_DM()
                         },
                 };
 
-                g_vertices[v_idx] = vertex;
-                g_indices[v_idx] = v_idx;
+                Hash const *search;
+                HASH_FIND(hh, map, &vertex, sizeof(Vertex), search);
+                if (!search)
+                {
+                    Hash *const add = calloc(1, sizeof(Hash));
+                    add->key = vertex;
+                    add->value = v_idx;
+                    HASH_ADD(hh, map, key, sizeof(Vertex), add);
+
+                    g_vertices[v_idx++] = vertex;
+                }
+
+                HASH_FIND(hh, map, &vertex, sizeof(Vertex), search);
+                g_indices[i_idx] = search->value;
             }
         }
     }
+    g_vertices_count = v_idx;
+    g_vertices = realloc(g_vertices, g_vertices_count * sizeof(Vertex));
 
+    Hash *each, *tmp;
+    HASH_ITER(hh, map, each, tmp)
+    {
+        HASH_DEL(map, each);
+        free(each);
+    }
     fast_obj_destroy(mesh);
 }
 
