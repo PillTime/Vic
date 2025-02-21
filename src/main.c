@@ -1,5 +1,3 @@
-// TODO: investigate usage of restrict
-
 #include <inttypes.h>
 #include <math.h>
 #include <stddef.h>
@@ -121,6 +119,10 @@ VkSampler g_texture_sampler;
 VkImage g_depth_image;
 VkDeviceMemory g_depth_image_memory;
 VkImageView g_depth_image_view;
+VkSampleCountFlagBits g_msaa_samples = VK_SAMPLE_COUNT_1_BIT;
+VkImage g_color_image;
+VkDeviceMemory g_color_image_memory;
+VkImageView g_color_image_view;
 
 #ifndef NDEBUG
 VkDebugUtilsMessengerEXT g_debug_messenger;
@@ -192,8 +194,8 @@ VkImageView vicCreateImageView(VkImage, VkFormat, VkImageAspectFlags, uint32_t);
 void vicCreateTextureImage();
 void vicCreateTextureImageView();
 void vicCreateTextureSampler();
-void vicCreateImage(uint32_t, uint32_t, uint32_t, VkFormat, VkImageTiling, VkImageUsageFlags,
-                    VkMemoryPropertyFlags, VkImage *, VkDeviceMemory *);
+void vicCreateImage(uint32_t, uint32_t, uint32_t, VkSampleCountFlagBits, VkFormat, VkImageTiling,
+                    VkImageUsageFlags, VkMemoryPropertyFlags, VkImage *, VkDeviceMemory *);
 void vicCreateBuffer(VkDeviceSize, VkBufferUsageFlags, VkMemoryPropertyFlags, VkBuffer *,
                      VkDeviceMemory *);
 void vicCopyBuffer(VkBuffer, VkBuffer, VkDeviceSize);
@@ -221,6 +223,8 @@ VkFormat vicFindDepthFormat();
 bool vicHasStencilComponent(VkFormat);
 void vicCreateDepthResources();
 void vicGenerateMipmaps(VkImage, VkFormat, uint32_t, uint32_t, uint32_t);
+VkSampleCountFlagBits vicGetMaxUsableSampleCount();
+void vicCreateColorResources();
 
 #ifndef NDEBUG
 void vicPopulateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT *);
@@ -246,7 +250,7 @@ uint32_t vicClamp(uint32_t const min, uint32_t const x, uint32_t const max)
 {
     fputs(msg, stderr);
     fflush(stderr);
-    abort();
+    exit(EXIT_FAILURE);
 }
 
 void vicInitWindow()
@@ -274,6 +278,7 @@ void vicInitVulkan()
     vicCreateDescriptorSetLayout();
     vicCreateGraphicsPipeline();
     vicCreateCommandPool();
+    vicCreateColorResources();
     vicCreateDepthResources();
     vicCreateFramebuffers_DM();
     vicCreateTextureImage();
@@ -474,6 +479,7 @@ void vicPickPhysicalDevice()
         if (vicDeviceIsSuitable(devices[i]))
         {
             g_physical_device = devices[i];
+            g_msaa_samples = vicGetMaxUsableSampleCount();
             break;
         }
     }
@@ -522,7 +528,6 @@ QueueFamilyIndices vicFindQueueFamilies(VkPhysicalDevice const device)
         calloc((size_t)queue_families_count, sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families_count, queue_families);
 
-    // TODO: check why validation layers complain about non unique queue family indices
     for (size_t i = 0; i < queue_families_count; i++)
     {
         if (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
@@ -573,6 +578,7 @@ void vicCreateLogicalDevice()
 
     VkPhysicalDeviceFeatures device_features = {};
     device_features.samplerAnisotropy = VK_TRUE;
+    device_features.sampleRateShading = VK_TRUE;
 
     VkDeviceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -738,17 +744,9 @@ void vicCreateSwapChain_DM()
     QueueFamilyIndices const indices = vicFindQueueFamilies(g_physical_device);
     uint32_t const queue_family_indices[] = {indices.graphics_family, indices.present_family};
 
-    if (indices.graphics_family != indices.present_family)
-    {
-        create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-        create_info.queueFamilyIndexCount = 2;
-        create_info.pQueueFamilyIndices = queue_family_indices;
-    }
-    else
-    {
-        // TODO: same as in vicFindQueueFamilyIndices (this block will never run)
-        create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    }
+    create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+    create_info.queueFamilyIndexCount = 2;
+    create_info.pQueueFamilyIndices = queue_family_indices;
 
     create_info.preTransform = swap_chain_support.capabilities.currentTransform;
     create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -787,13 +785,13 @@ void vicCreateRenderPass()
 {
     VkAttachmentDescription color_attachment = {};
     color_attachment.format = g_swap_chain_image_format;
-    color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment.samples = g_msaa_samples;
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    color_attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkAttachmentReference color_attachment_reference = {};
     color_attachment_reference.attachment = 0;
@@ -801,7 +799,7 @@ void vicCreateRenderPass()
 
     VkAttachmentDescription depth_attachment = {};
     depth_attachment.format = vicFindDepthFormat();
-    depth_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth_attachment.samples = g_msaa_samples;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     depth_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -813,11 +811,26 @@ void vicCreateRenderPass()
     depth_attachment_reference.attachment = 1;
     depth_attachment_reference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+    VkAttachmentDescription color_attachment_resolve = {};
+    color_attachment_resolve.format = g_swap_chain_image_format;
+    color_attachment_resolve.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_attachment_resolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment_resolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_attachment_resolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color_attachment_resolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color_attachment_resolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_attachment_resolve.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference color_attachment_resolve_reference = {};
+    color_attachment_resolve_reference.attachment = 2;
+    color_attachment_resolve_reference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_attachment_reference;
     subpass.pDepthStencilAttachment = &depth_attachment_reference;
+    subpass.pResolveAttachments = &color_attachment_resolve_reference;
 
     VkSubpassDependency dependency = {};
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -830,7 +843,8 @@ void vicCreateRenderPass()
     dependency.dstAccessMask =
         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    VkAttachmentDescription const attachments[] = {color_attachment, depth_attachment};
+    VkAttachmentDescription const attachments[] = {color_attachment, depth_attachment,
+                                                   color_attachment_resolve};
     size_t const attachments_count = sizeof(attachments) / sizeof(VkAttachmentDescription);
 
     VkRenderPassCreateInfo create_info = {};
@@ -964,9 +978,9 @@ void vicCreateGraphicsPipeline()
 
     VkPipelineMultisampleStateCreateInfo multisample_create_info = {};
     multisample_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample_create_info.sampleShadingEnable = VK_FALSE;
-    multisample_create_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    multisample_create_info.minSampleShading = 1.0;
+    multisample_create_info.sampleShadingEnable = VK_TRUE;
+    multisample_create_info.minSampleShading = 0.2;
+    multisample_create_info.rasterizationSamples = g_msaa_samples;
 
     VkPipelineColorBlendAttachmentState color_blend_attachment = {};
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -1076,7 +1090,8 @@ void vicCreateFramebuffers_DM()
 
     for (size_t i = 0; i < g_swap_chain_images_count; i++)
     {
-        VkImageView const attachments[] = {g_swap_chain_image_views[i], g_depth_image_view};
+        VkImageView const attachments[] = {g_color_image_view, g_depth_image_view,
+                                           g_swap_chain_image_views[i]};
         size_t const attachments_count = sizeof(attachments) / sizeof(VkImageView);
 
         VkFramebufferCreateInfo create_info = {};
@@ -1160,7 +1175,8 @@ void vicCreateTextureImage()
 
     stbi_image_free(image);
 
-    vicCreateImage(width, height, g_mip_levels, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+    vicCreateImage(width, height, g_mip_levels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
+                   VK_IMAGE_TILING_OPTIMAL,
                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                        VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_texture_image, &g_texture_image_memory);
@@ -1211,9 +1227,10 @@ void vicCreateTextureSampler()
 }
 
 void vicCreateImage(uint32_t const width, uint32_t const height, uint32_t const mip_levels,
-                    VkFormat const format, VkImageTiling const tiling,
-                    VkImageUsageFlags const usage, VkMemoryPropertyFlags const properties,
-                    VkImage *const image, VkDeviceMemory *const memory)
+                    VkSampleCountFlagBits const samples, VkFormat const format,
+                    VkImageTiling const tiling, VkImageUsageFlags const usage,
+                    VkMemoryPropertyFlags const properties, VkImage *const image,
+                    VkDeviceMemory *const memory)
 {
     VkImageCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1228,7 +1245,7 @@ void vicCreateImage(uint32_t const width, uint32_t const height, uint32_t const 
     create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     create_info.usage = usage;
     create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    create_info.samples = samples;
 
     if (vkCreateImage(g_device, &create_info, nullptr, image) != VK_SUCCESS)
     {
@@ -1750,6 +1767,10 @@ void vicCreateSyncObjects_DM()
 
 void vicCleanupSwapChain()
 {
+    vkDestroyImageView(g_device, g_color_image_view, nullptr);
+    vkDestroyImage(g_device, g_color_image, nullptr);
+    vkFreeMemory(g_device, g_color_image_memory, nullptr);
+
     vkDestroyImageView(g_device, g_depth_image_view, nullptr);
     vkDestroyImage(g_device, g_depth_image, nullptr);
     vkFreeMemory(g_device, g_depth_image_memory, nullptr);
@@ -1786,6 +1807,7 @@ void vicRecreateSwapChain()
 
     vicCreateSwapChain_DM();
     vicCreateImageViews_DM();
+    vicCreateColorResources();
     vicCreateDepthResources();
     vicCreateFramebuffers_DM();
 }
@@ -1967,9 +1989,10 @@ void vicCreateDepthResources()
 {
     VkFormat const depth_format = vicFindDepthFormat();
 
-    vicCreateImage(g_swap_chain_extent.width, g_swap_chain_extent.height, 1, depth_format,
-                   VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_depth_image, &g_depth_image_memory);
+    vicCreateImage(g_swap_chain_extent.width, g_swap_chain_extent.height, 1, g_msaa_samples,
+                   depth_format, VK_IMAGE_TILING_OPTIMAL,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                   &g_depth_image, &g_depth_image_memory);
     g_depth_image_view =
         vicCreateImageView(g_depth_image, depth_format, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
@@ -2064,6 +2087,57 @@ void vicGenerateMipmaps(VkImage const image, VkFormat const format, uint32_t con
                              &barrier);
     }
     vicEndSingleTimeCommands(command_buffer);
+}
+
+VkSampleCountFlagBits vicGetMaxUsableSampleCount()
+{
+    VkPhysicalDeviceProperties physical_device_properties = {};
+    vkGetPhysicalDeviceProperties(g_physical_device, &physical_device_properties);
+
+    VkSampleCountFlags const counts =
+        physical_device_properties.limits.framebufferColorSampleCounts &
+        physical_device_properties.limits.framebufferDepthSampleCounts;
+
+    if (counts & VK_SAMPLE_COUNT_64_BIT)
+    {
+        return VK_SAMPLE_COUNT_64_BIT;
+    }
+    else if (counts & VK_SAMPLE_COUNT_32_BIT)
+    {
+        return VK_SAMPLE_COUNT_32_BIT;
+    }
+    else if (counts & VK_SAMPLE_COUNT_16_BIT)
+    {
+        return VK_SAMPLE_COUNT_16_BIT;
+    }
+    else if (counts & VK_SAMPLE_COUNT_8_BIT)
+    {
+        return VK_SAMPLE_COUNT_8_BIT;
+    }
+    else if (counts & VK_SAMPLE_COUNT_4_BIT)
+    {
+        return VK_SAMPLE_COUNT_4_BIT;
+    }
+    else if (counts & VK_SAMPLE_COUNT_2_BIT)
+    {
+        return VK_SAMPLE_COUNT_2_BIT;
+    }
+    else
+    {
+        return VK_SAMPLE_COUNT_1_BIT;
+    }
+}
+
+void vicCreateColorResources()
+{
+    VkFormat const color_format = g_swap_chain_image_format;
+
+    vicCreateImage(g_swap_chain_extent.width, g_swap_chain_extent.height, 1, g_msaa_samples,
+                   color_format, VK_IMAGE_TILING_OPTIMAL,
+                   VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &g_color_image, &g_color_image_memory);
+    g_color_image_view =
+        vicCreateImageView(g_color_image, color_format, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 }
 
 #ifndef NDEBUG
