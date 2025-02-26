@@ -49,5 +49,5 @@ cmake -S . -B build -G 'Ninja Multi-Config'
 cmake --build build --config "$2"
 
 if [ "$1" = 'Run' ]; then
-  "./build/src/$2/vic" 2> >(while read -r line; do printf '\e[01;31m%s\e[0m\n' "$line" >&2; done)
+  "./build/sources/$2/vic" 2> >(while read -r line; do printf '\e[01;31m%s\e[0m\n' "$line" >&2; done)
 fi

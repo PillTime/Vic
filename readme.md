@@ -1,8 +1,6 @@
 # vic - Vulkan Tutorial in C23
 
-Unorganized, single file.
-
-Intend to fix in the future.
+Refactor in progress.
 
 ### Dependencies
 | Name      | Version |
